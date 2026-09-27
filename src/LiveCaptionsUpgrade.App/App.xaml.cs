@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Windows;
+using System.Windows.Threading;
 using LiveCaptionsUpgrade.Core;
 
 namespace LiveCaptionsUpgrade;
@@ -75,6 +76,8 @@ public partial class App : Application
         _service = new CaptionService(_settings);
         _service.CaptionsUpdated += update => Dispatcher.InvokeAsync(() => _overlay.ShowUpdate(update));
         _service.StatusChanged += status => Dispatcher.InvokeAsync(() => _overlay.ShowStatus(status));
+        _service.Notice += message => Dispatcher.InvokeAsync(() => _tray.ShowNotice(message));
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         _overlay.Show();
         _service.Start();
@@ -90,6 +93,15 @@ public partial class App : Application
     {
         Cleanup();
         base.OnSessionEnding(e);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        // Exit cleanly rather than crash, so the hidden Live Captions window is always given back.
+        e.Handled = true;
+        MessageBox.Show("Live Captions Upgrade hit an unexpected error and will close:\n\n" + e.Exception.Message,
+            "Live Captions Upgrade", MessageBoxButton.OK, MessageBoxImage.Error);
+        ExitApp();
     }
 
     private void Cleanup()

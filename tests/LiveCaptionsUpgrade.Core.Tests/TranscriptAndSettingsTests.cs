@@ -73,4 +73,16 @@ public sealed class TranscriptAndSettingsTests : IDisposable
         Assert.Equal(50, loaded.PollIntervalMs);
         Assert.Equal(1, loaded.BackgroundOpacity);
     }
+
+    [Fact]
+    public void Hide_method_defaults_to_invisible_and_is_stored_by_name()
+    {
+        string path = Path.Combine(_dir, "hide.json");
+        Assert.Equal(LiveCaptionsHideMethod.Invisible, AppSettings.Load(path).HideMethod);
+
+        new AppSettings { HideMethod = LiveCaptionsHideMethod.Minimize }.Save(path);
+
+        Assert.Contains("\"HideMethod\": \"Minimize\"", File.ReadAllText(path));
+        Assert.Equal(LiveCaptionsHideMethod.Minimize, AppSettings.Load(path).HideMethod);
+    }
 }

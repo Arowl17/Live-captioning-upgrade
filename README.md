@@ -11,7 +11,8 @@ This app reads Live Captions' text as it appears and gives you:
 - **Clean sentence history**: finished sentences stay on screen above the one being spoken.
 - **Automatic transcripts**: every finished sentence is saved, with a timestamp, to a text file.
 - **Click-through mode**: lock the overlay so clicks go to the window underneath.
-- **Hides the original Live Captions window**, so only one caption bar is on screen.
+- **Only this app's captions are on screen.** The original Live Captions window keeps running but is
+  invisible: it has no taskbar button, doesn't appear in Alt+Tab, and clicks pass straight through it.
 
 ## How it works
 
@@ -43,8 +44,9 @@ words are appended, recent words get corrected, and old lines scroll off the top
 1. Open Live Captions once on its own (**Win + Ctrl + L**) and finish its setup. On first run it asks
    you to download the speech files for your language.
 2. Optional: in Live Captions ⚙ → **Preferences**, turn on **Include microphone audio** to caption your own voice too.
-3. Optional: in Live Captions ⚙ → **Position**, choose **Floating on screen** so it doesn't reserve space
-   at the top or bottom of your screen.
+3. In Live Captions ⚙ → **Position**, choose **Floating on screen**. When docked to the top or bottom,
+   Live Captions reserves that strip of the screen, and Windows keeps it empty even while Live Captions is
+   invisible. The app shows a reminder if it finds Live Captions docked.
 
 ## Run it
 
@@ -63,7 +65,22 @@ To build a single `.exe`:
 dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
 ```
 
-The app starts Live Captions for you if it isn't already running.
+The app starts Live Captions for you if it isn't already running, and hides it as soon as its captions
+appear. Until then, for example while Live Captions shows its first-run setup, it stays visible so you can finish the setup.
+
+### How Live Captions is hidden
+
+Live Captions is not minimised, because a minimised window might stop updating its captions. Instead it stays open and is:
+
+- made fully transparent and click-through,
+- moved past the edge of the desktop,
+- removed from the taskbar and Alt+Tab.
+
+The app checks this every poll and re-applies it if Live Captions undoes it. When you exit, the Live Captions
+window is put back exactly where it was.
+
+If captions ever stop updating while Live Captions is hidden, set `"HideMethod": "Minimize"` in the settings
+to use plain minimising instead.
 
 ## Using it
 
@@ -74,6 +91,9 @@ The app starts Live Captions for you if it isn't already running.
   - *Open transcripts folder*: by default `Documents\LiveCaptionsUpgrade\Transcripts`
   - *Edit settings*
   - *Exit*: saves the last unfinished sentence and restores the Live Captions window.
+
+The *Show original Live Captions window* option is how you reach Live Captions' own settings, for example
+to change the language or turn on microphone audio. Untick it to hide Live Captions again.
 
 ## Settings
 
@@ -87,7 +107,8 @@ Settings are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. Edit the f
 | `BackgroundColor` / `BackgroundOpacity` | `#000000` / `0.7` | Overlay background (opacity 0–1) |
 | `HistoryLines` | `2` | Finished sentences kept on screen (0–10) |
 | `ClickThrough` | `false` | Start with the overlay locked |
-| `HideLiveCaptionsWindow` | `true` | Minimise the original Live Captions window while running |
+| `HideLiveCaptionsWindow` | `true` | Hide the original Live Captions window while running |
+| `HideMethod` | `Invisible` | `Invisible` (transparent and off screen, keeps running) or `Minimize` (fallback) |
 | `SaveTranscript` | `true` | Write finished sentences to a transcript file |
 | `TranscriptFolder` | *(empty)* | Transcript location. Empty means `Documents\LiveCaptionsUpgrade\Transcripts`. `%VARIABLES%` are expanded. |
 | `PollIntervalMs` | `150` | How often Live Captions is read |
@@ -120,7 +141,8 @@ Run the tests with `dotnet test`. They also run on Linux and macOS.
   `LiveCaptionsReader.cs`.
 - If Live Captions rewrites a sentence substantially *after* it was finalised, the transcript can contain
   both versions.
-- If captions stop updating while the Live Captions window is hidden, set `HideLiveCaptionsWindow` to `false`.
+- If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible. Press
+  **Win + Ctrl + L** twice to close and reopen it normally.
 
 ## Ideas for next steps
 

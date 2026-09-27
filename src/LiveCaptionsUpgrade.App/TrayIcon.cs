@@ -45,6 +45,9 @@ internal sealed class TrayIcon : IDisposable
 
     public void ShowMenuAtCursor() => _icon.ContextMenuStrip?.Show(Cursor.Position);
 
+    public void ShowNotice(string message) =>
+        _icon.ShowBalloonTip(15000, "Live Captions Upgrade", message, ToolTipIcon.Info);
+
     public void Dispose()
     {
         _icon.Visible = false;

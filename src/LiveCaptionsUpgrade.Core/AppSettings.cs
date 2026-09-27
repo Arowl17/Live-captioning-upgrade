@@ -1,6 +1,17 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LiveCaptionsUpgrade.Core;
+
+/// <summary>How the original Live Captions window is kept off screen.</summary>
+public enum LiveCaptionsHideMethod
+{
+    /// <summary>Keep it open but fully transparent, click-through and parked off screen, so it keeps captioning.</summary>
+    Invisible,
+
+    /// <summary>Minimise it. Fallback in case a Windows update stops <see cref="Invisible"/> from working.</summary>
+    Minimize,
+}
 
 /// <summary>User settings, stored as JSON in %APPDATA%\LiveCaptionsUpgrade\settings.json.</summary>
 public sealed class AppSettings
@@ -10,6 +21,7 @@ public sealed class AppSettings
         WriteIndented = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     /// <summary>How often the Live Captions text is read, in milliseconds.</summary>
@@ -18,8 +30,10 @@ public sealed class AppSettings
     /// <summary>How long the text must stay unchanged before a punctuated last sentence counts as finished.</summary>
     public int IdleFinalizeMs { get; set; } = 1200;
 
-    /// <summary>Minimise the original Live Captions window and remove it from the taskbar while this app runs.</summary>
+    /// <summary>Hide the original Live Captions window while this app runs, so only this app's captions are on screen.</summary>
     public bool HideLiveCaptionsWindow { get; set; } = true;
+
+    public LiveCaptionsHideMethod HideMethod { get; set; } = LiveCaptionsHideMethod.Invisible;
 
     public bool SaveTranscript { get; set; } = true;
 
@@ -106,5 +120,6 @@ public sealed class AppSettings
         HistoryTextColor = string.IsNullOrWhiteSpace(HistoryTextColor) ? "#B8B8B8" : HistoryTextColor;
         BackgroundColor = string.IsNullOrWhiteSpace(BackgroundColor) ? "#000000" : BackgroundColor;
         TranscriptFolder ??= string.Empty;
+        HideMethod = Enum.IsDefined(HideMethod) ? HideMethod : LiveCaptionsHideMethod.Invisible;
     }
 }

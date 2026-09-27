@@ -13,6 +13,9 @@ internal sealed class CaptionService
 {
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
 
+    // If the caption text hasn't appeared by now, Live Captions is probably showing its first-run setup.
+    private static readonly TimeSpan SetupHintDelay = TimeSpan.FromSeconds(5);
+
     private readonly AppSettings _settings;
     private readonly LiveCaptionsReader _reader = new();
     private readonly CaptionTracker _tracker;
@@ -20,6 +23,9 @@ internal sealed class CaptionService
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private volatile bool _hideLiveCaptions;
+    private DateTime _attachedAt;
+    private bool _setupHintShown;
+    private bool _dockedNoticeShown;
 
     public CaptionService(AppSettings settings)
     {
@@ -33,6 +39,9 @@ internal sealed class CaptionService
 
     /// <summary>Raised with a message to show the user, or null once captions are flowing normally.</summary>
     public event Action<string?>? StatusChanged;
+
+    /// <summary>Raised with a one-off tip for the user, e.g. how to stop Live Captions reserving screen space.</summary>
+    public event Action<string>? Notice;
 
     public void Start()
     {
@@ -84,22 +93,13 @@ internal sealed class CaptionService
                     }
 
                     _tracker.Reset();
+                    _attachedAt = DateTime.UtcNow;
+                    _setupHintShown = false;
                     StatusChanged?.Invoke(null);
                 }
 
-                if (_hideLiveCaptions != _reader.IsHidden)
-                {
-                    if (_hideLiveCaptions)
-                    {
-                        _reader.Hide();
-                    }
-                    else
-                    {
-                        _reader.Show();
-                    }
-                }
-
                 string? text = _reader.ReadText();
+                UpdateLiveCaptionsVisibility();
                 if (text is not null)
                 {
                     Publish(_tracker.Process(text, DateTimeOffset.Now));
@@ -128,6 +128,45 @@ internal sealed class CaptionService
                     break;
                 }
             }
+        }
+    }
+
+    private void UpdateLiveCaptionsVisibility()
+    {
+        if (!_hideLiveCaptions)
+        {
+            _reader.Show();
+            return;
+        }
+
+        if (_reader.IsHidden)
+        {
+            _reader.KeepHidden();
+            return;
+        }
+
+        // Only hide once captions are flowing. Until then Live Captions may be showing its
+        // first-run setup (language download), which the user has to be able to see and finish.
+        if (!_reader.HasFoundCaptions)
+        {
+            if (!_setupHintShown && DateTime.UtcNow - _attachedAt > SetupHintDelay)
+            {
+                _setupHintShown = true;
+                StatusChanged?.Invoke("Live Captions is open but not captioning yet. If it is showing a setup screen, finish it there.");
+            }
+
+            return;
+        }
+
+        _reader.Hide(_settings.HideMethod);
+        StatusChanged?.Invoke(null);
+        if (_reader.IsDocked && !_dockedNoticeShown)
+        {
+            _dockedNoticeShown = true;
+            // Keep under 255 characters, the limit for tray notifications.
+            Notice?.Invoke(
+                "Live Captions is docked to the screen edge, so Windows keeps that space empty. To free it: tray icon > "
+                + "Show original Live Captions window > Settings > Position > Floating on screen.");
         }
     }
 
