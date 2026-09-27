@@ -35,6 +35,12 @@ internal sealed class GlobalHotkey : IDisposable
 
         uint modifiers = (uint)hotkey.Modifiers | NativeMethods.MOD_NOREPEAT;
         uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key);
+        if (virtualKey == 0)
+        {
+            // Not a real key (e.g. "None" typed into the settings file).
+            return false;
+        }
+
         _registered = NativeMethods.RegisterHotKey(_source.Handle, HotkeyId, modifiers, virtualKey);
         return _registered;
     }

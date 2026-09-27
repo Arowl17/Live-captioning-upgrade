@@ -35,6 +35,16 @@ words are appended, recent words get corrected, and old lines scroll off the top
   has been unchanged for `IdleFinalizeMs`.
 - To avoid emitting anything twice as the text scrolls, the tracker finds recently committed sentences
   in the new text. The match is fuzzy, so a small correction such as "their" → "they're" still counts as the same sentence.
+  Numbers must match exactly, so a customer correcting "555 0134" to "555 0135" is never dropped as a repeat.
+- A sentence longer than the visible text keeps its beginning: the tracker remembers the unfinished sentence
+  and stitches its start back on once that scrolls away.
+- If Live Captions changes its mind about where a sentence ends after it was saved ("I called yesterday."
+  becoming "I called yesterday, and they said no."), only the new words are added ("and they said no.").
+- "Mr. Smith", "John A. Smith" and "3 p.m. today" don't split sentences.
+
+These rules are checked by a simulation test that replays thousands of calls the way Live Captions shows
+them (words arriving in bursts, corrections, late punctuation, merged sentences, text briefly going blank,
+old lines scrolling away) and verifies that every word comes out exactly once.
 
 ## Requirements
 
@@ -154,8 +164,8 @@ Run the tests with `dotnet test`. They also run on Linux and macOS.
 - The app depends on Live Captions' internal window and element names (`LiveCaptionsDesktopWindow`,
   `CaptionsTextBlock`). A future Windows update could rename them; the constants are at the top of
   `LiveCaptionsReader.cs`.
-- If Live Captions rewrites a sentence substantially *after* it was finalised, the transcript can contain
-  both versions.
+- If Live Captions rewrites a sentence heavily *after* it was saved (more than a word or two), the transcript
+  can contain both versions.
 - If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible until you start
   this app again, which picks it up and gives it back when you exit normally. Or press **Win + Ctrl + L**
   twice to close and reopen Live Captions.

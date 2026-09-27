@@ -18,6 +18,12 @@ public static class SentenceSplitter
     // Characters that may trail a terminator and still belong to the sentence, e.g. `"Stop!"` or `(yes.)`.
     private const string Closers = "\"'”’)]」』";
 
+    // Titles are followed by a name, never the end of a sentence: "Mr. Smith".
+    private static readonly HashSet<string> Titles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "approx", "dept", "apt",
+    };
+
     /// <summary>Collapses all runs of whitespace (including the line breaks Live Captions inserts) into single spaces.</summary>
     public static string NormalizeWhitespace(string? text)
     {
@@ -75,7 +81,8 @@ public static class SentenceSplitter
             }
 
             // "3.5" or "example.com" are not sentence ends: a terminator must be followed by a space or the end of text.
-            bool isBoundary = end == s.Length || s[end] == ' ' || CjkTerminators.IndexOf(c) >= 0;
+            bool isBoundary = (end == s.Length || s[end] == ' ' || CjkTerminators.IndexOf(c) >= 0)
+                && !(c == '.' && end == i + 1 && IsAbbreviation(s, start, i, end));
             if (isBoundary)
             {
                 AddSegment(segments, s[start..end], isTerminated: true);
@@ -91,6 +98,45 @@ public static class SentenceSplitter
         }
 
         return segments;
+    }
+
+    /// <summary>True if the full stop at <paramref name="dot"/> belongs to an abbreviation rather than ending a sentence.</summary>
+    private static bool IsAbbreviation(string s, int sentenceStart, int dot, int end)
+    {
+        int wordStart = s.LastIndexOf(' ', dot - 1, dot - sentenceStart) + 1;
+        wordStart = Math.Max(wordStart, sentenceStart);
+        string word = s[wordStart..dot].TrimStart('"', '\'', '(', '“', '‘');
+        if (word.Length == 0)
+        {
+            return false;
+        }
+
+        // "Mr. Smith", "Dr. Jones".
+        if (Titles.Contains(word))
+        {
+            return true;
+        }
+
+        // An initial: "John A. Smith". ("I." does end sentences: "So did I.")
+        if (word.Length == 1 && char.IsUpper(word[0]) && word[0] != 'I')
+        {
+            return true;
+        }
+
+        // "3 p.m. today", "e.g. this": only a sentence end once a new sentence (capital letter) follows.
+        // At the very end of the text it's too early to tell, so wait for the next word.
+        if (word.Contains('.'))
+        {
+            int next = end;
+            while (next < s.Length && s[next] == ' ')
+            {
+                next++;
+            }
+
+            return next == s.Length || !char.IsUpper(s[next]);
+        }
+
+        return false;
     }
 
     private static void AddSegment(List<CaptionSegment> segments, string raw, bool isTerminated)

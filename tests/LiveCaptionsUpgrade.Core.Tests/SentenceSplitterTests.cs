@@ -48,6 +48,18 @@ public class SentenceSplitterTests
         Assert.Equal(new[] { "你好。", "今天天气很好！", "我们" }, segments.Select(s => s.Text));
     }
 
+    [Theory]
+    [InlineData("Hello, this is Mr. Smith from billing. Hi", "Hello, this is Mr. Smith from billing.")]
+    [InlineData("I spoke to Dr. Jones. Ok", "I spoke to Dr. Jones.")]
+    [InlineData("My name is John A. Smith. Ok", "My name is John A. Smith.")]
+    [InlineData("Call after 3 p.m. today please. Ok", "Call after 3 p.m. today please.")]
+    [InlineData("Call after 3 p.m. Thanks", "Call after 3 p.m.")]
+    [InlineData("So did I. Then", "So did I.")]
+    public void Titles_initials_and_abbreviations_do_not_end_sentences(string text, string firstSentence)
+    {
+        Assert.Equal(firstSentence, SentenceSplitter.Split(text)[0].Text);
+    }
+
     [Fact]
     public void Empty_text_has_no_segments()
     {

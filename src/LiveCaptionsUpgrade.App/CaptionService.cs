@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +33,7 @@ internal sealed class CaptionService
     private bool _setupHintShown;
     private bool _dockedNoticeShown;
     private string? _status;
+    private string _lastPending = string.Empty;
 
     public CaptionService(AppSettings settings)
     {
@@ -225,17 +227,21 @@ internal sealed class CaptionService
 
     private void Publish(CaptionUpdate update)
     {
-        if (update.NewSentences.Count == 0 && !update.TextChanged)
+        // Only bother the UI when what it shows changes: often the text changes only in a sentence already
+        // emitted (Live Captions correcting it), which leaves the display as it is.
+        if (update.NewSentences.Count == 0 && string.Equals(update.Pending, _lastPending, StringComparison.Ordinal))
         {
             return;
         }
+
+        _lastPending = update.Pending;
 
         // Show the captions first; the transcript must never hold them up.
         CaptionsUpdated?.Invoke(update);
         WriteTranscript(update.NewSentences);
     }
 
-    private void WriteTranscript(System.Collections.Generic.IReadOnlyList<string> sentences)
+    private void WriteTranscript(IReadOnlyList<string> sentences)
     {
         if (sentences.Count == 0)
         {
