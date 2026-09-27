@@ -20,6 +20,10 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private bool _cleanedUp;
 
+    internal bool HasCaptionSelection => _overlay?.HasSelection == true;
+
+    internal void CopyCaptionSelection() => _overlay?.CopySelection();
+
     internal void ToggleOverlayVisible()
     {
         if (_overlay is null)

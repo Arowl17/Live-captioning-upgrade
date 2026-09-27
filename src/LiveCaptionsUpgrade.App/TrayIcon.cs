@@ -11,6 +11,7 @@ namespace LiveCaptionsUpgrade;
 internal sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _icon;
+    private readonly ToolStripMenuItem _copyItem;
     private readonly ToolStripMenuItem _showCaptionsItem;
     private readonly ToolStripMenuItem _clickThroughItem;
     private readonly ToolStripMenuItem _showLiveCaptionsItem;
@@ -20,11 +21,14 @@ internal sealed class TrayIcon : IDisposable
         // Menu actions run after the menu has closed: Exit disposes this menu, and Settings opens a window.
         EventHandler Later(Action action) => (_, _) => app.Dispatcher.InvokeAsync(action);
 
+        _copyItem = new ToolStripMenuItem("Copy", null, Later(app.CopyCaptionSelection)) { ShortcutKeyDisplayString = "Ctrl+C" };
         _showCaptionsItem = new ToolStripMenuItem("Show captions", null, Later(app.ToggleOverlayVisible));
         _clickThroughItem = new ToolStripMenuItem("Lock overlay (clicks pass through)", null, Later(app.ToggleClickThrough));
         _showLiveCaptionsItem = new ToolStripMenuItem("Show original Live Captions window", null, Later(app.ToggleLiveCaptionsWindow));
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add(_copyItem);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_showCaptionsItem);
         menu.Items.Add(_clickThroughItem);
         menu.Items.Add(_showLiveCaptionsItem);
@@ -33,6 +37,9 @@ internal sealed class TrayIcon : IDisposable
         menu.Items.Add("Open transcripts folder", null, Later(app.OpenTranscriptsFolder));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, Later(app.ExitApp));
+
+        // Copy copies the text selected in the caption bar, so it's only available when some is.
+        menu.Opening += (_, _) => _copyItem.Enabled = app.HasCaptionSelection;
 
         _icon = new NotifyIcon
         {

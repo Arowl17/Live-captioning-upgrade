@@ -96,14 +96,18 @@ How to hide it** and choose **Minimize**.
 
 ## Using it
 
-- **Drag** the overlay to move it. **Drag any edge or corner** to resize it (the cursor changes when you're
-  close enough to an edge; a faint outline shows the edges while the mouse is over the overlay). It doesn't
-  snap to the screen edges like normal windows, and can't be made larger than the screen.
+- **Select text** with the mouse to copy it (double-click selects a word, handy for an order number), then
+  press **Ctrl+C** or right-click → **Copy**. While you're selecting, the captions hold still; after copying
+  (or clicking elsewhere) they carry on following the conversation.
+- **Move** the overlay by dragging the grip on its left side (it appears when the mouse is over the overlay) or
+  any empty space. **Drag any edge or corner** to resize it (the cursor changes when you're close enough to an
+  edge). It doesn't snap to the screen edges like normal windows, and can't be made larger than the screen.
 - **Scroll up** with the mouse wheel over the captions to read earlier text. While you're scrolled up the
   text stays still; scroll back down or click **Back to live** to follow the conversation again.
 - **Ctrl+Alt+H** hides and shows the captions from any app. Captions keep being collected while hidden,
   so you can scroll back to anything said in the meantime.
 - **Right-click** the overlay, or the tray icon in the notification area, for options:
+  - *Copy*: copies the selected text
   - *Show captions*: same as the shortcut
   - *Lock overlay (clicks pass through)*: once locked, the tray icon is the way back to the menu. Scrolling
     doesn't work while locked.

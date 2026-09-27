@@ -18,32 +18,57 @@
         LostMouseCapture="OnLostMouseCapture"
         MouseEnter="OnMouseEnter"
         MouseLeave="OnMouseLeave"
-        MouseRightButtonUp="OnMouseRightButtonUp">
-    <!-- Moving and resizing are done by the app, not Windows: drag anywhere to move, drag an edge or corner to
-         resize. (Windows' own handling snaps the window to screen edges and corners and redraws it clumsily.)
-         A faint outline shows the edges while the mouse is over the window. -->
-    <Border x:Name="Panel" CornerRadius="8" Padding="18,10" BorderThickness="1" BorderBrush="Transparent">
+        PreviewMouseRightButtonUp="OnPreviewMouseRightButtonUp">
+    <!-- Moving and resizing are done by the app, not Windows (whose handling snaps the window to screen edges
+         and corners and redraws it clumsily). Drag an edge or corner to resize. The text can be selected and
+         copied, so the window is moved by dragging the grip on the left or any empty space.
+         A faint outline and the grip show while the mouse is over the window. -->
+    <Border x:Name="Panel" CornerRadius="8" Padding="6,10,18,10" BorderThickness="1" BorderBrush="Transparent">
         <Grid>
-            <!-- Mouse wheel scrolls back through recent captions. The scroll bar stays hidden to keep it looking like captions. -->
-            <ScrollViewer x:Name="Scroller"
-                          VerticalScrollBarVisibility="Hidden"
-                          HorizontalScrollBarVisibility="Disabled"
-                          ScrollChanged="OnScrollChanged">
-                <!-- Bottom-aligned so the newest text sits at the bottom, like subtitles, even when there is little of it. -->
-                <StackPanel VerticalAlignment="Bottom">
-                    <ItemsControl x:Name="HistoryList">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <TextBlock x:Name="LiveText" TextWrapping="Wrap" />
-                    <TextBlock x:Name="StatusText" TextWrapping="Wrap" FontSize="13" Opacity="0.75" Visibility="Collapsed" />
-                </StackPanel>
-            </ScrollViewer>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <UniformGrid x:Name="Grip" Grid.RowSpan="2" Rows="3" Columns="2" Width="8" Height="14"
+                         HorizontalAlignment="Left" VerticalAlignment="Center" Opacity="0" IsHitTestVisible="False">
+                <Ellipse Width="3" Height="3" />
+                <Ellipse Width="3" Height="3" />
+                <Ellipse Width="3" Height="3" />
+                <Ellipse Width="3" Height="3" />
+                <Ellipse Width="3" Height="3" />
+                <Ellipse Width="3" Height="3" />
+            </UniformGrid>
+
+            <!-- Finished sentences, then the one being spoken. Read-only but selectable; the mouse wheel scrolls
+                 back through earlier text (scroll bar hidden to look like captions). Bottom-aligned so the newest
+                 text sits at the bottom, like subtitles, even when there is little of it. -->
+            <RichTextBox x:Name="Captions"
+                         Grid.Column="1"
+                         IsReadOnly="True"
+                         IsUndoEnabled="False"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Padding="0"
+                         FocusVisualStyle="{x:Null}"
+                         VerticalAlignment="Bottom"
+                         VerticalScrollBarVisibility="Hidden"
+                         HorizontalScrollBarVisibility="Disabled"
+                         ContextMenuService.IsEnabled="False"
+                         ScrollViewer.ScrollChanged="OnScrollChanged"
+                         SelectionChanged="OnSelectionChanged">
+                <FlowDocument PagePadding="0" TextAlignment="Left" />
+            </RichTextBox>
+
+            <TextBlock x:Name="StatusText" Grid.Row="1" Grid.Column="1" TextWrapping="Wrap" FontSize="13" Opacity="0.75"
+                       Visibility="Collapsed" />
 
             <Button x:Name="BackToLiveButton"
+                    Grid.Column="1"
                     Content="Back to live ↓"
                     FontSize="12"
                     Padding="8,2"
