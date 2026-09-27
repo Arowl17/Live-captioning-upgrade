@@ -38,6 +38,15 @@ public partial class SettingsWindow : Window
     /// <summary>Raised with the edited settings when OK or Apply is pressed.</summary>
     public event Action<AppSettings>? Applied;
 
+    /// <summary>Picks up options changed from the tray menu while this window is open, so OK doesn't undo them.</summary>
+    public void ReflectQuickToggles(AppSettings current)
+    {
+        _settings.ClickThrough = current.ClickThrough;
+        _settings.HideLiveCaptionsWindow = current.HideLiveCaptionsWindow;
+        ClickThroughBox.IsChecked = current.ClickThrough;
+        HideLiveCaptionsBox.IsChecked = current.HideLiveCaptionsWindow;
+    }
+
     private void LoadValues()
     {
         var fonts = Fonts.SystemFontFamilies
@@ -102,19 +111,64 @@ public partial class SettingsWindow : Window
 
     private void OnOk(object sender, RoutedEventArgs e)
     {
-        Applied?.Invoke(Collect());
-        Close();
+        if (TryApply())
+        {
+            Close();
+        }
     }
 
-    private void OnApply(object sender, RoutedEventArgs e) => Applied?.Invoke(Collect());
+    private void OnApply(object sender, RoutedEventArgs e) => TryApply();
+
+    private bool TryApply()
+    {
+        var settings = Collect();
+        if (settings.SaveTranscript && !CanUseFolder(settings.ResolveTranscriptFolder(), out string problem))
+        {
+            MessageBox.Show(this, "Transcripts can't be saved in that folder:\n\n" + problem, Title,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            TranscriptFolderBox.Focus();
+            return false;
+        }
+
+        Applied?.Invoke(settings);
+        return true;
+    }
+
+    private static bool CanUseFolder(string folder, out string problem)
+    {
+        if (!Path.IsPathFullyQualified(folder))
+        {
+            problem = "Enter a full folder path, for example C:\\Users\\You\\Documents\\Transcripts.";
+            return false;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(folder);
+            problem = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            problem = ex.Message;
+            return false;
+        }
+    }
 
     // IsCancel only closes windows opened with ShowDialog; this one is modeless so the tray stays usable.
     private void OnCancel(object sender, RoutedEventArgs e) => Close();
 
     private void OnHotkeyPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        // Alt combinations arrive as Key.System with the real key in SystemKey.
-        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        // Alt combinations arrive as Key.System with the real key in SystemKey; with an input method
+        // editor or dead keys active, the real key is in ImeProcessedKey or DeadCharProcessedKey.
+        Key key = e.Key switch
+        {
+            Key.System => e.SystemKey,
+            Key.ImeProcessed => e.ImeProcessedKey,
+            Key.DeadCharProcessed => e.DeadCharProcessedKey,
+            _ => e.Key,
+        };
         var held = Keyboard.Modifiers;
 
         // Let Tab move focus and Escape close the window as usual.

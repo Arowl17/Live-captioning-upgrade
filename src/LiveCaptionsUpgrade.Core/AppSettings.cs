@@ -108,7 +108,10 @@ public sealed class AppSettings
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        // Write to a temporary file and swap it in, so a crash mid-write can't leave a half-written settings file.
+        string temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOptions));
+        File.Move(temporary, path, overwrite: true);
     }
 
     /// <summary>Clamps hand-edited values into sensible ranges.</summary>

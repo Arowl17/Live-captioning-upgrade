@@ -43,6 +43,7 @@ public partial class App : Application
     internal void ToggleClickThrough()
     {
         _overlay?.SetClickThrough(!_settings.ClickThrough);
+        _settingsWindow?.ReflectQuickToggles(_settings);
         RefreshTray();
     }
 
@@ -50,14 +51,23 @@ public partial class App : Application
     {
         _settings.HideLiveCaptionsWindow = !_settings.HideLiveCaptionsWindow;
         _service?.SetLiveCaptionsHidden(_settings.HideLiveCaptionsWindow);
+        _settingsWindow?.ReflectQuickToggles(_settings);
         RefreshTray();
     }
 
     internal void OpenTranscriptsFolder()
     {
         string folder = _settings.ResolveTranscriptFolder();
-        Directory.CreateDirectory(folder);
-        OpenWithShell(folder);
+        try
+        {
+            Directory.CreateDirectory(folder);
+            OpenWithShell(folder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+            or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            _tray?.ShowNotice($"Can't open the transcripts folder ({ex.Message}). Check it in Settings.");
+        }
     }
 
     internal void OpenSettings()
@@ -90,6 +100,19 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += (_, _) =>
+        {
+            // The process is going down (error on another thread): at least don't leave Live Captions invisible.
+            try
+            {
+                _service?.RestoreLiveCaptionsWindowNow();
+            }
+            catch (Exception)
+            {
+                // Nothing more can be done at this point.
+            }
+        };
 
         _singleInstance = new Mutex(initiallyOwned: true, @"Local\LiveCaptionsUpgrade.SingleInstance", out bool createdNew);
         if (!createdNew)
@@ -116,7 +139,6 @@ public partial class App : Application
         _service.CaptionsUpdated += update => Dispatcher.InvokeAsync(() => _overlay.ShowUpdate(update));
         _service.StatusChanged += status => Dispatcher.InvokeAsync(() => _overlay.ShowStatus(status));
         _service.Notice += message => Dispatcher.InvokeAsync(() => _tray.ShowNotice(message));
-        DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         _overlay.Show();
         RefreshTray();
@@ -161,7 +183,7 @@ public partial class App : Application
         Hotkey.TryParse(_settings.ToggleHotkey, out var hotkey);
         if (!_hotkey.Register(hotkey))
         {
-            _tray?.ShowNotice($"The shortcut {hotkey} is already used by another app. Choose a different one in Settings.");
+            _tray?.ShowNotice($"The shortcut {hotkey} couldn't be set up; another app is probably using it. Choose a different one in Settings.");
         }
     }
 
@@ -169,6 +191,11 @@ public partial class App : Application
     {
         // Exit cleanly rather than crash, so the hidden Live Captions window is always given back.
         e.Handled = true;
+        if (_cleanedUp)
+        {
+            return;
+        }
+
         MessageBox.Show("Live Captions Upgrade hit an unexpected error and will close:\n\n" + e.Exception.Message,
             "Live Captions Upgrade", MessageBoxButton.OK, MessageBoxImage.Error);
         ExitApp();

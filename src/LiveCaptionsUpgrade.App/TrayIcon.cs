@@ -17,19 +17,22 @@ internal sealed class TrayIcon : IDisposable
 
     public TrayIcon(App app)
     {
-        _showCaptionsItem = new ToolStripMenuItem("Show captions", null, (_, _) => app.ToggleOverlayVisible());
-        _clickThroughItem = new ToolStripMenuItem("Lock overlay (clicks pass through)", null, (_, _) => app.ToggleClickThrough());
-        _showLiveCaptionsItem = new ToolStripMenuItem("Show original Live Captions window", null, (_, _) => app.ToggleLiveCaptionsWindow());
+        // Menu actions run after the menu has closed: Exit disposes this menu, and Settings opens a window.
+        EventHandler Later(Action action) => (_, _) => app.Dispatcher.InvokeAsync(action);
+
+        _showCaptionsItem = new ToolStripMenuItem("Show captions", null, Later(app.ToggleOverlayVisible));
+        _clickThroughItem = new ToolStripMenuItem("Lock overlay (clicks pass through)", null, Later(app.ToggleClickThrough));
+        _showLiveCaptionsItem = new ToolStripMenuItem("Show original Live Captions window", null, Later(app.ToggleLiveCaptionsWindow));
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_showCaptionsItem);
         menu.Items.Add(_clickThroughItem);
         menu.Items.Add(_showLiveCaptionsItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Settings…", null, (_, _) => app.OpenSettings());
-        menu.Items.Add("Open transcripts folder", null, (_, _) => app.OpenTranscriptsFolder());
+        menu.Items.Add("Settings…", null, Later(app.OpenSettings));
+        menu.Items.Add("Open transcripts folder", null, Later(app.OpenTranscriptsFolder));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => app.ExitApp());
+        menu.Items.Add("Exit", null, Later(app.ExitApp));
 
         _icon = new NotifyIcon
         {
@@ -51,7 +54,7 @@ internal sealed class TrayIcon : IDisposable
     public void ShowMenuAtCursor() => _icon.ContextMenuStrip?.Show(Cursor.Position);
 
     public void ShowNotice(string message) =>
-        _icon.ShowBalloonTip(15000, "Live Captions Upgrade", message, ToolTipIcon.Info);
+        _icon.ShowBalloonTip(15000, "Live Captions Upgrade", message.Length > 250 ? message[..249] + "…" : message, ToolTipIcon.Info);
 
     public void Dispose()
     {

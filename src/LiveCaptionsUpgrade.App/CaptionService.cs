@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using LiveCaptionsUpgrade.Core;
@@ -26,9 +27,11 @@ internal sealed class CaptionService
     private Task? _loop;
     private volatile bool _hideLiveCaptions;
     private volatile LiveCaptionsHideMethod _hideMethod;
+    private bool _wasAttached;
     private DateTime _attachedAt;
     private bool _setupHintShown;
     private bool _dockedNoticeShown;
+    private string? _status;
 
     public CaptionService(AppSettings settings)
     {
@@ -42,7 +45,7 @@ internal sealed class CaptionService
     /// <summary>Raised with a message to show the user, or null once captions are flowing normally.</summary>
     public event Action<string?>? StatusChanged;
 
-    /// <summary>Raised with a one-off tip for the user, e.g. how to stop Live Captions reserving screen space.</summary>
+    /// <summary>Raised with a one-off message for the user, e.g. how to stop Live Captions reserving screen space.</summary>
     public event Action<string>? Notice;
 
     public void Start()
@@ -81,30 +84,27 @@ internal sealed class CaptionService
     /// <summary>Stops polling, saves any unfinished sentence and gives Live Captions its window back.</summary>
     public async Task StopAsync()
     {
-        if (_cts is null || _loop is null)
+        if (_cts is not null && _loop is not null)
         {
-            return;
+            _cts.Cancel();
+            await _loop.ConfigureAwait(false);
+            _cts.Dispose();
+            _cts = null;
+            _loop = null;
         }
 
-        _cts.Cancel();
-        await _loop.ConfigureAwait(false);
-        _cts.Dispose();
-        _cts = null;
-        _loop = null;
-
+        WriteTranscript(_tracker.Flush());
         lock (_transcriptLock)
         {
-            foreach (string sentence in _tracker.Flush())
-            {
-                _transcript?.Append(sentence, DateTimeOffset.Now);
-            }
-
             _transcript?.Dispose();
             _transcript = null;
         }
 
         _reader.Show();
     }
+
+    /// <summary>Last-ditch attempt to make Live Captions visible again when the app is crashing. Any thread.</summary>
+    public void RestoreLiveCaptionsWindowNow() => _reader.Show();
 
     private async Task RunAsync(CancellationToken ct)
     {
@@ -115,24 +115,40 @@ internal sealed class CaptionService
             {
                 if (!_reader.IsAttached)
                 {
-                    StatusChanged?.Invoke("Connecting to Windows Live Captions…");
+                    if (_wasAttached)
+                    {
+                        // Live Captions closed or crashed: keep what was being said rather than lose it.
+                        _wasAttached = false;
+                        var flushed = _tracker.Flush();
+                        Publish(new CaptionUpdate(flushed, string.Empty, TextChanged: true));
+                    }
+
+                    SetStatus("Connecting to Windows Live Captions…");
                     if (!await _reader.AttachAsync(ct))
                     {
-                        StatusChanged?.Invoke("Waiting for Windows Live Captions to start (finish its setup if it is showing one)…");
+                        SetStatus("Waiting for Windows Live Captions to start (finish its setup if it is showing one)…");
                         await Task.Delay(RetryDelay, ct);
                         continue;
                     }
 
+                    _wasAttached = true;
                     _tracker.Reset();
                     _attachedAt = DateTime.UtcNow;
                     _setupHintShown = false;
-                    StatusChanged?.Invoke(null);
+                    SetStatus(null);
                 }
 
                 string? text = _reader.ReadText();
                 UpdateLiveCaptionsVisibility();
                 if (text is not null)
                 {
+                    if (_setupHintShown || _status is not null)
+                    {
+                        // Reading works again, so any earlier problem message is out of date.
+                        _setupHintShown = false;
+                        SetStatus(null);
+                    }
+
                     Publish(_tracker.Process(text, DateTimeOffset.Now));
                 }
 
@@ -144,12 +160,12 @@ internal sealed class CaptionService
             }
             catch (LiveCaptionsUnavailableException ex)
             {
-                StatusChanged?.Invoke(ex.Message);
+                SetStatus(ex.Message);
                 break;
             }
             catch (Exception ex)
             {
-                StatusChanged?.Invoke("Problem reading Live Captions: " + ex.Message);
+                SetStatus("Problem reading Live Captions: " + ex.Message);
                 try
                 {
                     await Task.Delay(RetryDelay, ct);
@@ -190,14 +206,13 @@ internal sealed class CaptionService
             if (!_setupHintShown && DateTime.UtcNow - _attachedAt > SetupHintDelay)
             {
                 _setupHintShown = true;
-                StatusChanged?.Invoke("Live Captions is open but not captioning yet. If it is showing a setup screen, finish it there.");
+                SetStatus("Live Captions is open but not captioning yet. If it is showing a setup screen, finish it there.");
             }
 
             return;
         }
 
         _reader.Hide(_hideMethod);
-        StatusChanged?.Invoke(null);
         if (_reader.IsDocked && !_dockedNoticeShown)
         {
             _dockedNoticeShown = true;
@@ -215,15 +230,58 @@ internal sealed class CaptionService
             return;
         }
 
-        var now = DateTimeOffset.Now;
+        // Show the captions first; the transcript must never hold them up.
+        CaptionsUpdated?.Invoke(update);
+        WriteTranscript(update.NewSentences);
+    }
+
+    private void WriteTranscript(System.Collections.Generic.IReadOnlyList<string> sentences)
+    {
+        if (sentences.Count == 0)
+        {
+            return;
+        }
+
+        string? error = null;
         lock (_transcriptLock)
         {
-            foreach (string sentence in update.NewSentences)
+            if (_transcript is null)
             {
-                _transcript?.Append(sentence, now);
+                return;
+            }
+
+            try
+            {
+                var now = DateTimeOffset.Now;
+                foreach (string sentence in sentences)
+                {
+                    _transcript.Append(sentence, now);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                // Stop trying for this session (it would fail on every sentence); captions carry on regardless.
+                _transcript.Dispose();
+                _transcript = null;
+                error = ex.Message;
             }
         }
 
-        CaptionsUpdated?.Invoke(update);
+        if (error is not null)
+        {
+            Notice?.Invoke("Couldn't save the transcript, so saving is paused. Captions still work. "
+                + "Check the transcript folder in Settings. " + error);
+        }
+    }
+
+    private void SetStatus(string? status)
+    {
+        if (status == _status)
+        {
+            return;
+        }
+
+        _status = status;
+        StatusChanged?.Invoke(status);
     }
 }

@@ -156,5 +156,8 @@ Run the tests with `dotnet test`. They also run on Linux and macOS.
   `LiveCaptionsReader.cs`.
 - If Live Captions rewrites a sentence substantially *after* it was finalised, the transcript can contain
   both versions.
-- If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible. Press
-  **Win + Ctrl + L** twice to close and reopen it normally.
+- If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible until you start
+  this app again, which picks it up and gives it back when you exit normally. Or press **Win + Ctrl + L**
+  twice to close and reopen Live Captions.
+- If the transcript can't be written (e.g. the folder is on a disconnected drive), saving pauses with a
+  notification; captions keep working.

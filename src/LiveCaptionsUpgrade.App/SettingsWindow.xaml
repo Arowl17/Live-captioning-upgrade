@@ -53,7 +53,7 @@
                 <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" x:Name="FontBox" Margin="0,3" />
 
                 <TextBlock Grid.Row="1" Style="{StaticResource Label}" Text="Text size" />
-                <Slider Grid.Row="1" Grid.Column="1" x:Name="FontSizeSlider" Minimum="12" Maximum="72"
+                <Slider Grid.Row="1" Grid.Column="1" x:Name="FontSizeSlider" Minimum="8" Maximum="96"
                         IsSnapToTickEnabled="True" TickFrequency="1" VerticalAlignment="Center" />
                 <TextBlock Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" TextAlignment="Right"
                            Text="{Binding Value, ElementName=FontSizeSlider, StringFormat={}{0:0}}" />

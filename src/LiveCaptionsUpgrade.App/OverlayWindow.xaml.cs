@@ -34,6 +34,15 @@ public partial class OverlayWindow : Window
 
         _pruneTimer.Tick += (_, _) => PruneOldLines();
         _pruneTimer.Start();
+
+        // When shown again (e.g. with the shortcut), start at the newest text; earlier text is a scroll away.
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true)
+            {
+                Scroller.ScrollToEnd();
+            }
+        };
     }
 
     /// <summary>Raised when the user right-clicks the overlay.</summary>
@@ -70,6 +79,8 @@ public partial class OverlayWindow : Window
 
     public void SetClickThrough(bool enabled)
     {
+        // Change the resize mode first: it makes WPF rewrite the window styles.
+        ResizeMode = enabled ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd != IntPtr.Zero)
         {
@@ -78,7 +89,6 @@ public partial class OverlayWindow : Window
             NativeMethods.SetWindowLong(hwnd, NativeMethods.GWL_EXSTYLE, exStyle);
         }
 
-        ResizeMode = enabled ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
         _settings.ClickThrough = enabled;
     }
 
@@ -113,8 +123,10 @@ public partial class OverlayWindow : Window
             SystemParameters.VirtualScreenTop,
             SystemParameters.VirtualScreenWidth,
             SystemParameters.VirtualScreenHeight);
+        // Use the saved position only if a good part of the window is still on a screen (monitors change).
+        var visible = Rect.Intersect(screen, new Rect(_settings.WindowLeft ?? 0, _settings.WindowTop ?? 0, Width, Height));
         if (_settings.WindowLeft is double left && _settings.WindowTop is double top
-            && screen.IntersectsWith(new Rect(left, top, Width, Height)))
+            && !visible.IsEmpty && visible.Width >= Math.Min(100, Width) && visible.Height >= Math.Min(40, Height))
         {
             Left = left;
             Top = top;
@@ -145,8 +157,9 @@ public partial class OverlayWindow : Window
     /// <summary>Drops sentences older than the scroll-back limit so memory use stays small.</summary>
     private void PruneOldLines()
     {
-        // Never pull text out from under someone who has scrolled back to read it; catch up once they return to live.
-        if (!_followLive)
+        // Don't pull text out from under someone who has scrolled back to read it (catch up once they return
+        // to live), unless they stay there so long that the hard limit on lines is reached.
+        if (!_followLive && _lines.Count <= Scrollback.MaxLines)
         {
             return;
         }
@@ -202,9 +215,18 @@ public partial class OverlayWindow : Window
 
     private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed)
+        if (e.ButtonState != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        try
         {
             DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            // The button was released before the move started.
         }
     }
 
