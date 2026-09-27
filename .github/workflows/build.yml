@@ -1,0 +1,27 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Test
+        run: dotnet test tests/LiveCaptionsUpgrade.Core.Tests -c Release
+
+      - name: Publish
+        run: dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -o publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveCaptionsUpgrade-win-x64
+          path: publish/LiveCaptionsUpgrade.exe

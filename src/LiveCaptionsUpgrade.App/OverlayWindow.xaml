@@ -1,0 +1,23 @@
+<Window x:Class="LiveCaptionsUpgrade.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Live Captions Upgrade"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="Manual"
+        MouseLeftButtonDown="OnMouseLeftButtonDown"
+        MouseRightButtonUp="OnMouseRightButtonUp">
+    <Border x:Name="Panel" CornerRadius="8" Padding="18,10" ClipToBounds="True">
+        <!-- Bottom-aligned so the newest text is always visible and older lines scroll off the top. -->
+        <StackPanel VerticalAlignment="Bottom">
+            <TextBlock x:Name="HistoryText" TextWrapping="Wrap" Visibility="Collapsed" />
+            <TextBlock x:Name="LiveText" TextWrapping="Wrap" />
+            <TextBlock x:Name="StatusText" TextWrapping="Wrap" FontSize="13" Opacity="0.75" Visibility="Collapsed" />
+        </StackPanel>
+    </Border>
+</Window>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- Only used for the tray icon (NotifyIcon). -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Lets the project compile on non-Windows machines (CI); it still only runs on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Implicit usings would pull in both WPF and WinForms namespaces and make names like Application ambiguous. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>LiveCaptionsUpgrade</AssemblyName>
+    <RootNamespace>LiveCaptionsUpgrade</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LiveCaptionsUpgrade.Core\LiveCaptionsUpgrade.Core.csproj" />
+  </ItemGroup>
+
+</Project>
