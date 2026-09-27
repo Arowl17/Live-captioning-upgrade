@@ -169,6 +169,65 @@ public class CaptionTrackerTests
     }
 
     [Fact]
+    public void Start_of_a_sentence_longer_than_the_visible_text_is_kept()
+    {
+        Feed("Done. This is a very long sentence that keeps");
+        Feed("long sentence that keeps going and going");
+        Feed("keeps going and going on and on");
+        Feed("going on and on. Next one");
+
+        Assert.Equal(new[] { "Done.", "This is a very long sentence that keeps going and going on and on." }, _emitted);
+    }
+
+    [Fact]
+    public void Start_is_kept_when_a_word_is_corrected_as_it_scrolls_away()
+    {
+        Feed("Done. Please check their services for the");
+        Feed("check there service for the delivery date");
+        Feed("service for the delivery date. Thanks");
+
+        Assert.Equal(new[] { "Done.", "Please check there service for the delivery date." }, _emitted);
+    }
+
+    [Fact]
+    public void Start_is_kept_when_only_the_last_word_is_left()
+    {
+        Feed("Done. Is this the right number for");
+        Feed("Done. Is this the right number for you?");
+        Feed("you? I can call");
+
+        Assert.Equal(new[] { "Done.", "Is this the right number for you?" }, _emitted);
+    }
+
+    [Fact]
+    public void Unfinished_sentence_is_not_mistaken_for_an_earlier_short_one()
+    {
+        Feed("Maybe. Okay");
+        Feed("Maybe. Okay then. Maybe");
+
+        Assert.Equal(new[] { "Maybe.", "Okay then." }, _emitted);
+    }
+
+    [Fact]
+    public void Repeated_short_sentence_needs_its_context_to_count_as_seen()
+    {
+        Feed("Yes. Is it");
+        Feed("Yes. Is it the blue one? Yes. And");
+
+        Assert.Equal(new[] { "Yes.", "Is it the blue one?", "Yes." }, _emitted);
+    }
+
+    [Fact]
+    public void Short_tail_of_an_old_sentence_at_the_top_is_not_emitted_again()
+    {
+        Feed("We went to the store. And then");
+        Feed("store. And then we drove home again and");
+        Feed("store. And then we drove home again and slept. Bye");
+
+        Assert.Equal(new[] { "We went to the store.", "And then we drove home again and slept." }, _emitted);
+    }
+
+    [Fact]
     public void Reset_forgets_committed_sentences()
     {
         Feed("Same words. Next");

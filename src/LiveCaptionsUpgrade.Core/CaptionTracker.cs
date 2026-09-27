@@ -16,7 +16,9 @@ public sealed record CaptionUpdate(IReadOnlyList<string> NewSentences, string Pe
 /// <item>treats every sentence except the last as final (a later sentence exists, so the speaker moved on);</item>
 /// <item>also finalises a punctuated last sentence once the text has been unchanged for the idle delay;</item>
 /// <item>finds where it left off by locating recently committed sentences in the new text (fuzzily,
-/// since Live Captions sometimes tweaks words), so nothing is emitted twice when the text scrolls.</item>
+/// since Live Captions sometimes tweaks words), so nothing is emitted twice when the text scrolls;</item>
+/// <item>remembers the unfinished sentence, so a sentence longer than the visible text doesn't lose
+/// its start when that scrolls away.</item>
 /// </list>
 /// </remarks>
 public sealed class CaptionTracker
@@ -26,8 +28,17 @@ public sealed class CaptionTracker
     // How many recently committed sentences to look for when locating where we left off.
     private const int AnchorDepth = 8;
 
-    // A leading fragment (the start of the sentence scrolled away) must be at least this long to count as a match.
-    private const int MinFragmentLength = 12;
+    // Words from the start of the visible text used to find where it continues the unfinished sentence.
+    // With this many words, one of them may differ (Live Captions corrected it as the line scrolled away).
+    private const int ProbeWords = 5;
+    private const int MinProbeWords = 2;
+    private const int MinProbeWordsForOneMismatch = 4;
+
+    // Upper bound on a reconstructed unfinished sentence, in case Live Captions stops punctuating for minutes.
+    private const int MaxPendingLength = 4000;
+
+    // Sentences shorter than this ("Yes.", "Maybe.") are too common to recognise without the sentence before them.
+    private const int MinDistinctiveLength = 15;
 
     private readonly TimeSpan _idleFinalizeDelay;
     private readonly double _similarityThreshold;
@@ -91,10 +102,16 @@ public sealed class CaptionTracker
     private IReadOnlyList<string> Commit(bool includeTerminatedLast, bool includeUnterminatedLast)
     {
         var segments = SentenceSplitter.Split(_text);
-        var normalized = new string[segments.Count];
-        for (int i = 0; i < segments.Count; i++)
+        var normalized = NormalizeAll(segments);
+        int anchor = FindAnchor(segments, normalized);
+
+        // No finished sentence is visible any more: the unfinished one may be so long that its start has
+        // scrolled off the top. Put the start back from what was seen on earlier polls.
+        if (anchor < 0 && TryRestoreScrolledOffStart(segments, out string restored))
         {
-            normalized[i] = TextSimilarity.Normalize(segments[i].Text);
+            segments = SentenceSplitter.Split(restored);
+            normalized = NormalizeAll(segments);
+            anchor = FindAnchor(segments, normalized);
         }
 
         int finalCount = segments.Count - 1;
@@ -109,7 +126,6 @@ public sealed class CaptionTracker
 
         finalCount = Math.Max(finalCount, 0);
 
-        int anchor = FindAnchor(normalized);
         var added = new List<string>();
         for (int i = anchor + 1; i < finalCount; i++)
         {
@@ -128,8 +144,161 @@ public sealed class CaptionTracker
         return added;
     }
 
+    private static string[] NormalizeAll(IReadOnlyList<CaptionSegment> segments)
+    {
+        var normalized = new string[segments.Count];
+        for (int i = 0; i < segments.Count; i++)
+        {
+            normalized[i] = TextSimilarity.Normalize(segments[i].Text);
+        }
+
+        return normalized;
+    }
+
+    /// <summary>
+    /// If the visible text continues the pending sentence from part-way through (its start scrolled away),
+    /// returns the visible text with the missing start put back in front.
+    /// </summary>
+    private bool TryRestoreScrolledOffStart(IReadOnlyList<CaptionSegment> segments, out string restored)
+    {
+        restored = string.Empty;
+        if (_pending.Length == 0 || segments.Count == 0)
+        {
+            return false;
+        }
+
+        // Compare words ignoring case and punctuation, which Live Captions often adjusts as it goes.
+        string[] pendingWords = _pending.Split(' ');
+        string[] pendingKeys = pendingWords.Select(TextSimilarity.Normalize).ToArray();
+        string[] firstWords = segments[0].Text.Split(' ');
+        string[] probe = firstWords
+            .Select(TextSimilarity.Normalize)
+            .Where(word => word.Length > 0)
+            .Take(ProbeWords)
+            .ToArray();
+        if (probe.Length == 0)
+        {
+            return false;
+        }
+
+        if (probe.Length < MinProbeWords)
+        {
+            // Only the last word of the pending sentence is left (e.g. "today?"). Too little to search for,
+            // but if it's exactly the word the pending sentence ended on, the rest scrolled away.
+            if (firstWords.Length == 1 && pendingWords.Length > 1
+                && string.Equals(TrimPunctuation(pendingWords[^1]), TrimPunctuation(firstWords[0]), StringComparison.Ordinal))
+            {
+                restored = string.Join(" ", pendingWords, 0, pendingWords.Length - 1) + " " + _text;
+                return true;
+            }
+
+            return false;
+        }
+
+        // Visible text still starts where the pending sentence starts: nothing has scrolled away.
+        if (StartsWithAt(pendingKeys, 0, probe, Math.Min(probe.Length, pendingKeys.Length)))
+        {
+            return false;
+        }
+
+        // Best place in the pending sentence where the visible text picks up (fewest differences; the
+        // latest one on a tie, as repeated words like "no no no" match in several places)...
+        int start = -1;
+        int bestCost = int.MaxValue;
+        for (int j = pendingKeys.Length - probe.Length; j > 0; j--)
+        {
+            int cost = AlignmentCost(pendingKeys, j, probe, probe.Length);
+            if (cost >= 0 && cost < bestCost)
+            {
+                start = j;
+                bestCost = cost;
+            }
+        }
+
+        // ...or where it overlaps just the end of it, when new words have been added since.
+        for (int overlap = Math.Min(probe.Length - 1, pendingKeys.Length - 1); overlap >= MinProbeWords && start < 0; overlap--)
+        {
+            int j = pendingKeys.Length - overlap;
+            if (StartsWithAt(pendingKeys, j, probe, overlap))
+            {
+                start = j;
+            }
+        }
+
+        if (start < 0)
+        {
+            return false;
+        }
+
+        restored = string.Join(" ", pendingWords, 0, start) + " " + _text;
+        if (restored.Length > MaxPendingLength)
+        {
+            int cut = restored.IndexOf(' ', restored.Length - MaxPendingLength);
+            restored = cut > 0 ? restored[(cut + 1)..] : restored[^MaxPendingLength..];
+        }
+
+        return true;
+    }
+
+    private static string TrimPunctuation(string word) => word.Trim('.', ',', '!', '?', '…', '。', '！', '？', '"', '\'', '”', '’', ')', '(');
+
+    /// <summary>True if <paramref name="probe"/>'s first <paramref name="count"/> words appear at <paramref name="index"/>.</summary>
+    private static bool StartsWithAt(string[] words, int index, string[] probe, int count) =>
+        AlignmentCost(words, index, probe, count) >= 0;
+
+    /// <summary>
+    /// How well <paramref name="probe"/>'s first <paramref name="count"/> words match the words at <paramref name="index"/>:
+    /// 0 for identical, higher for each corrected or different word, or -1 if they don't match.
+    /// </summary>
+    private static int AlignmentCost(string[] words, int index, string[] probe, int count)
+    {
+        if (count <= 0 || index + count > words.Length)
+        {
+            return -1;
+        }
+
+        int allowedMismatches = count >= MinProbeWordsForOneMismatch ? 1 : 0;
+        int cost = 0;
+        for (int k = 0; k < count; k++)
+        {
+            string word = words[index + k];
+            if (string.Equals(word, probe[k], StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (IsSameWord(word, probe[k]))
+            {
+                cost += 1;
+            }
+            else if (--allowedMismatches >= 0)
+            {
+                cost += 10;
+            }
+            else
+            {
+                return -1;
+            }
+        }
+
+        return cost;
+    }
+
+    /// <summary>Similar enough to be the same word after a small correction ("services" / "service", "their" / "there").</summary>
+    private static bool IsSameWord(string a, string b)
+    {
+        int longer = Math.Max(a.Length, b.Length);
+        if (Math.Min(a.Length, b.Length) < 3 || Math.Abs(a.Length - b.Length) > 3)
+        {
+            return false;
+        }
+
+        int distance = TextSimilarity.Levenshtein(a, b);
+        return distance <= 3 && distance * 5 <= longer * 2;
+    }
+
     /// <summary>Returns the index of the last segment that was already committed, or -1 if none is visible.</summary>
-    private int FindAnchor(string[] normalized)
+    private int FindAnchor(IReadOnlyList<CaptionSegment> segments, string[] normalized)
     {
         if (_committed.Count == 0 || normalized.Length == 0)
         {
@@ -138,25 +307,27 @@ public sealed class CaptionTracker
 
         int oldest = Math.Max(0, _committed.Count - AnchorDepth);
 
-        // First pass: also require the sentence before it to match, so a repeated short
-        // sentence ("Yes.") is not mistaken for an earlier one.
+        // First pass: the sentence before it must match too, so a repeated sentence ("Yes.") isn't mistaken
+        // for an earlier one. The oldest visible sentence has nothing before it, so it's accepted as is.
         for (int k = _committed.Count - 1; k >= oldest; k--)
         {
             for (int i = normalized.Length - 1; i >= 0; i--)
             {
-                if (Matches(normalized[i], k, i) && (k == 0 || i == 0 || Matches(normalized[i - 1], k - 1, i - 1)))
+                if (IsAnchorCandidate(segments, i) && Matches(normalized[i], k, i)
+                    && (i == 0 || (k > 0 && Matches(normalized[i - 1], k - 1, i - 1))))
                 {
                     return i;
                 }
             }
         }
 
-        // Second pass: the preceding sentence may have been revised; accept a match on its own.
+        // Second pass: the sentence before it may have been revised since. Accept a match on its own,
+        // but only for a sentence distinctive enough not to be a coincidence.
         for (int k = _committed.Count - 1; k >= oldest; k--)
         {
             for (int i = normalized.Length - 1; i >= 0; i--)
             {
-                if (Matches(normalized[i], k, i))
+                if (IsAnchorCandidate(segments, i) && normalized[i].Length >= MinDistinctiveLength && Matches(normalized[i], k, i))
                 {
                     return i;
                 }
@@ -165,6 +336,10 @@ public sealed class CaptionTracker
 
         return -1;
     }
+
+    // Only finished sentences are ever committed, so an unfinished one ("Maybe") can't be where we left off,
+    // however much it looks like an earlier sentence ("Maybe.").
+    private static bool IsAnchorCandidate(IReadOnlyList<CaptionSegment> segments, int index) => segments[index].IsTerminated;
 
     private bool Matches(string candidate, int committedIndex, int segmentIndex)
     {
@@ -182,9 +357,12 @@ public sealed class CaptionTracker
             return true;
         }
 
-        // The first visible segment may be the tail of a sentence whose start scrolled off the top.
+        // The first visible segment may be the tail of a sentence whose start scrolled off the top. The oldest
+        // visible text has always been seen and committed on an earlier poll, so even a short tail counts.
         return segmentIndex == 0
-            && candidate.Length >= MinFragmentLength
+            && candidate.Length > 0
+            && committed.Length > candidate.Length
+            && committed[committed.Length - candidate.Length - 1] == ' '
             && committed.EndsWith(candidate, StringComparison.Ordinal);
     }
 
