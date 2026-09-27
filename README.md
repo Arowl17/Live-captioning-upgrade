@@ -96,7 +96,9 @@ How to hide it** and choose **Minimize**.
 
 ## Using it
 
-- **Drag** the overlay to move it; drag the bottom-right corner to resize.
+- **Drag** the overlay to move it. **Drag any edge or corner** to resize it (the cursor changes when you're
+  close enough to an edge; a faint outline shows the edges while the mouse is over the overlay). It doesn't
+  snap to the screen edges like normal windows, and can't be made larger than the screen.
 - **Scroll up** with the mouse wheel over the captions to read earlier text. While you're scrolled up the
   text stays still; scroll back down or click **Back to live** to follow the conversation again.
 - **Ctrl+Alt+H** hides and shows the captions from any app. Captions keep being collected while hidden,

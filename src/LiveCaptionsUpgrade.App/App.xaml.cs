@@ -130,6 +130,12 @@ public partial class App : Application
         _overlay = new OverlayWindow(_settings);
         _tray = new TrayIcon(this);
         _overlay.MenuRequested += (_, _) => _tray.ShowMenuAtCursor();
+        _overlay.BoundsChanged += (_, _) =>
+        {
+            // Remember the new position and size straight away, not only on exit.
+            _overlay.StoreBounds();
+            SaveSettings();
+        };
 
         _hotkey = new GlobalHotkey(_overlay);
         _hotkey.Pressed += (_, _) => ToggleOverlayVisible();

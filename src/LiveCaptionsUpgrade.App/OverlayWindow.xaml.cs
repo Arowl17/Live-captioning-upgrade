@@ -15,6 +15,12 @@ public partial class OverlayWindow : Window
 {
     private const string ListeningHint = "Listening… captions will appear here. Scroll to see earlier text, right-click for options.";
 
+    // How close to an edge (in DIPs) the mouse must be to resize rather than move; corners get a bigger target.
+    private const double ResizeEdge = 8;
+    private const double ResizeCorner = 16;
+
+    private static readonly Brush HoverOutline = new SolidColorBrush(Color.FromArgb(0x70, 0xFF, 0xFF, 0xFF));
+
     private readonly ObservableCollection<CaptionLine> _lines = new();
     private readonly DispatcherTimer _pruneTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private AppSettings _settings;
@@ -22,6 +28,24 @@ public partial class OverlayWindow : Window
 
     // True while showing the newest text. Scrolling up pauses this so the text you're reading doesn't move.
     private bool _followLive = true;
+
+    // Moving/resizing in progress: which edges follow the mouse (none = moving), and where it started, in
+    // device pixels. The new position is applied at most once per frame, when the window is redrawn anyway.
+    private bool _dragging;
+    private Edges _dragEdges;
+    private NativeMethods.POINT _dragStartCursor;
+    private NativeMethods.RECT _dragStartRect;
+    private NativeMethods.RECT? _pendingRect;
+
+    [Flags]
+    private enum Edges
+    {
+        None = 0,
+        Left = 1,
+        Top = 2,
+        Right = 4,
+        Bottom = 8,
+    }
 
     public OverlayWindow(AppSettings settings)
     {
@@ -47,6 +71,9 @@ public partial class OverlayWindow : Window
 
     /// <summary>Raised when the user right-clicks the overlay.</summary>
     public event EventHandler? MenuRequested;
+
+    /// <summary>Raised when the user has finished moving or resizing the overlay.</summary>
+    public event EventHandler? BoundsChanged;
 
     public void ShowUpdate(CaptionUpdate update)
     {
@@ -79,8 +106,6 @@ public partial class OverlayWindow : Window
 
     public void SetClickThrough(bool enabled)
     {
-        // Change the resize mode first: it makes WPF rewrite the window styles.
-        ResizeMode = enabled ? ResizeMode.NoResize : ResizeMode.CanResizeWithGrip;
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd != IntPtr.Zero)
         {
@@ -97,8 +122,8 @@ public partial class OverlayWindow : Window
     {
         _settings.WindowLeft = Left;
         _settings.WindowTop = Top;
-        _settings.WindowWidth = Width;
-        _settings.WindowHeight = Height;
+        _settings.WindowWidth = ActualWidth > 0 ? ActualWidth : Width;
+        _settings.WindowHeight = ActualHeight > 0 ? ActualHeight : Height;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -148,9 +173,11 @@ public partial class OverlayWindow : Window
         LiveText.Foreground = new SolidColorBrush(ParseColor(_settings.TextColor, Colors.White));
         HistoryList.Foreground = new SolidColorBrush(ParseColor(_settings.HistoryTextColor, Colors.LightGray));
         StatusText.Foreground = LiveText.Foreground;
+        // Fully transparent pixels don't receive the mouse, so keep the background a hair above zero:
+        // at 0% the window could otherwise only be grabbed by its text.
         Panel.Background = new SolidColorBrush(ParseColor(_settings.BackgroundColor, Colors.Black))
         {
-            Opacity = _settings.BackgroundOpacity,
+            Opacity = Math.Max(_settings.BackgroundOpacity, 0.01),
         };
     }
 
@@ -213,22 +240,186 @@ public partial class OverlayWindow : Window
         }
     }
 
-    private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private void OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState != MouseButtonState.Pressed)
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        if (_dragging || BackToLiveButton.IsMouseOver || hwnd == IntPtr.Zero
+            || !NativeMethods.GetWindowRect(hwnd, out _dragStartRect) || !NativeMethods.GetCursorPos(out _dragStartCursor))
         {
             return;
         }
 
-        try
+        _dragEdges = EdgesAt(e.GetPosition(this));
+        _dragging = CaptureMouse();
+        if (_dragging)
         {
-            DragMove();
-        }
-        catch (InvalidOperationException)
-        {
-            // The button was released before the move started.
+            CompositionTarget.Rendering += ApplyPendingBounds;
+            e.Handled = true;
         }
     }
+
+    private void OnPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_dragging)
+        {
+            Cursor = CursorFor(EdgesAt(e.GetPosition(this)));
+            return;
+        }
+
+        if (!NativeMethods.GetCursorPos(out var cursor))
+        {
+            return;
+        }
+
+        _pendingRect = DraggedRect(cursor.X - _dragStartCursor.X, cursor.Y - _dragStartCursor.Y);
+        e.Handled = true;
+    }
+
+    private void OnPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_dragging)
+        {
+            ReleaseMouseCapture();
+            e.Handled = true;
+        }
+    }
+
+    private void OnLostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (!_dragging)
+        {
+            return;
+        }
+
+        _dragging = false;
+        ApplyPendingBounds(this, EventArgs.Empty);
+        CompositionTarget.Rendering -= ApplyPendingBounds;
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnMouseEnter(object sender, MouseEventArgs e) => Panel.BorderBrush = HoverOutline;
+
+    private void OnMouseLeave(object sender, MouseEventArgs e)
+    {
+        if (!_dragging)
+        {
+            Panel.BorderBrush = Brushes.Transparent;
+            Cursor = null;
+        }
+    }
+
+    /// <summary>Moves/resizes the window to the latest dragged position, once per frame.</summary>
+    private void ApplyPendingBounds(object? sender, EventArgs e)
+    {
+        if (_pendingRect is not NativeMethods.RECT rect)
+        {
+            return;
+        }
+
+        _pendingRect = null;
+        uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
+        if (_dragEdges == Edges.None)
+        {
+            flags |= NativeMethods.SWP_NOSIZE;
+        }
+
+        // One call for position and size together, so the opposite edge stays put while resizing.
+        NativeMethods.SetWindowPos(new WindowInteropHelper(this).Handle, IntPtr.Zero, rect.Left, rect.Top, rect.Width, rect.Height, flags);
+    }
+
+    /// <summary>The window rectangle after the mouse has moved by (dx, dy) device pixels since the drag started.</summary>
+    private NativeMethods.RECT DraggedRect(int dx, int dy)
+    {
+        var start = _dragStartRect;
+        if (_dragEdges == Edges.None)
+        {
+            return new NativeMethods.RECT
+            {
+                Left = start.Left + dx,
+                Top = start.Top + dy,
+                Right = start.Right + dx,
+                Bottom = start.Bottom + dy,
+            };
+        }
+
+        // Limits in device pixels: the minimum size, and at most the screen the window is on.
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        int minWidth = (int)Math.Ceiling(MinWidth * scale);
+        int minHeight = (int)Math.Ceiling(MinHeight * scale);
+        int maxWidth = int.MaxValue;
+        int maxHeight = int.MaxValue;
+        var monitor = NativeMethods.MONITORINFO.Create();
+        IntPtr hmonitor = NativeMethods.MonitorFromWindow(new WindowInteropHelper(this).Handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        if (NativeMethods.GetMonitorInfo(hmonitor, ref monitor))
+        {
+            maxWidth = Math.Max(minWidth, monitor.rcWork.Width);
+            maxHeight = Math.Max(minHeight, monitor.rcWork.Height);
+        }
+
+        var rect = start;
+        if (_dragEdges.HasFlag(Edges.Left))
+        {
+            rect.Left = Math.Clamp(start.Left + dx, start.Right - maxWidth, start.Right - minWidth);
+        }
+        else if (_dragEdges.HasFlag(Edges.Right))
+        {
+            rect.Right = Math.Clamp(start.Right + dx, start.Left + minWidth, start.Left + maxWidth);
+        }
+
+        if (_dragEdges.HasFlag(Edges.Top))
+        {
+            rect.Top = Math.Clamp(start.Top + dy, start.Bottom - maxHeight, start.Bottom - minHeight);
+        }
+        else if (_dragEdges.HasFlag(Edges.Bottom))
+        {
+            rect.Bottom = Math.Clamp(start.Bottom + dy, start.Top + minHeight, start.Top + maxHeight);
+        }
+
+        return rect;
+    }
+
+    /// <summary>Which edges a point (in DIPs, relative to the window) is close enough to grab.</summary>
+    private Edges EdgesAt(Point point)
+    {
+        double width = ActualWidth;
+        double height = ActualHeight;
+        var edges = Edges.None;
+
+        // Corners get a bigger target, as they're the usual way to resize.
+        bool nearCornerX = point.X <= ResizeCorner || point.X >= width - ResizeCorner;
+        bool nearCornerY = point.Y <= ResizeCorner || point.Y >= height - ResizeCorner;
+        double edgeX = nearCornerX && nearCornerY ? ResizeCorner : ResizeEdge;
+        double edgeY = nearCornerX && nearCornerY ? ResizeCorner : ResizeEdge;
+
+        if (point.X <= edgeX)
+        {
+            edges |= Edges.Left;
+        }
+        else if (point.X >= width - edgeX)
+        {
+            edges |= Edges.Right;
+        }
+
+        if (point.Y <= edgeY)
+        {
+            edges |= Edges.Top;
+        }
+        else if (point.Y >= height - edgeY)
+        {
+            edges |= Edges.Bottom;
+        }
+
+        return edges;
+    }
+
+    private static Cursor? CursorFor(Edges edges) => edges switch
+    {
+        Edges.Left | Edges.Top or Edges.Right | Edges.Bottom => Cursors.SizeNWSE,
+        Edges.Right | Edges.Top or Edges.Left | Edges.Bottom => Cursors.SizeNESW,
+        Edges.Left or Edges.Right => Cursors.SizeWE,
+        Edges.Top or Edges.Bottom => Cursors.SizeNS,
+        _ => null,
+    };
 
     private void OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {

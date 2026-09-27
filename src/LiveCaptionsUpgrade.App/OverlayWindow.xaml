@@ -8,11 +8,21 @@
         Topmost="True"
         ShowInTaskbar="False"
         ShowActivated="False"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="NoResize"
+        MinWidth="200"
+        MinHeight="60"
         WindowStartupLocation="Manual"
-        MouseLeftButtonDown="OnMouseLeftButtonDown"
+        PreviewMouseLeftButtonDown="OnPreviewMouseLeftButtonDown"
+        PreviewMouseMove="OnPreviewMouseMove"
+        PreviewMouseLeftButtonUp="OnPreviewMouseLeftButtonUp"
+        LostMouseCapture="OnLostMouseCapture"
+        MouseEnter="OnMouseEnter"
+        MouseLeave="OnMouseLeave"
         MouseRightButtonUp="OnMouseRightButtonUp">
-    <Border x:Name="Panel" CornerRadius="8" Padding="18,10">
+    <!-- Moving and resizing are done by the app, not Windows: drag anywhere to move, drag an edge or corner to
+         resize. (Windows' own handling snaps the window to screen edges and corners and redraws it clumsily.)
+         A faint outline shows the edges while the mouse is over the window. -->
+    <Border x:Name="Panel" CornerRadius="8" Padding="18,10" BorderThickness="1" BorderBrush="Transparent">
         <Grid>
             <!-- Mouse wheel scrolls back through recent captions. The scroll bar stays hidden to keep it looking like captions. -->
             <ScrollViewer x:Name="Scroller"
