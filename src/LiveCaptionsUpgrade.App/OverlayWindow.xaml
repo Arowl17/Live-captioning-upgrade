@@ -12,12 +12,37 @@
         WindowStartupLocation="Manual"
         MouseLeftButtonDown="OnMouseLeftButtonDown"
         MouseRightButtonUp="OnMouseRightButtonUp">
-    <Border x:Name="Panel" CornerRadius="8" Padding="18,10" ClipToBounds="True">
-        <!-- Bottom-aligned so the newest text is always visible and older lines scroll off the top. -->
-        <StackPanel VerticalAlignment="Bottom">
-            <TextBlock x:Name="HistoryText" TextWrapping="Wrap" Visibility="Collapsed" />
-            <TextBlock x:Name="LiveText" TextWrapping="Wrap" />
-            <TextBlock x:Name="StatusText" TextWrapping="Wrap" FontSize="13" Opacity="0.75" Visibility="Collapsed" />
-        </StackPanel>
+    <Border x:Name="Panel" CornerRadius="8" Padding="18,10">
+        <Grid>
+            <!-- Mouse wheel scrolls back through recent captions. The scroll bar stays hidden to keep it looking like captions. -->
+            <ScrollViewer x:Name="Scroller"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Disabled"
+                          ScrollChanged="OnScrollChanged">
+                <!-- Bottom-aligned so the newest text sits at the bottom, like subtitles, even when there is little of it. -->
+                <StackPanel VerticalAlignment="Bottom">
+                    <ItemsControl x:Name="HistoryList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="LiveText" TextWrapping="Wrap" />
+                    <TextBlock x:Name="StatusText" TextWrapping="Wrap" FontSize="13" Opacity="0.75" Visibility="Collapsed" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <Button x:Name="BackToLiveButton"
+                    Content="Back to live ↓"
+                    FontSize="12"
+                    Padding="8,2"
+                    Margin="0,0,14,0"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Cursor="Hand"
+                    Visibility="Collapsed"
+                    Click="OnBackToLiveClick" />
+        </Grid>
     </Border>
 </Window>

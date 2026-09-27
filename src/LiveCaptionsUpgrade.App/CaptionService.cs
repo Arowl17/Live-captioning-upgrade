@@ -16,23 +16,25 @@ internal sealed class CaptionService
     // If the caption text hasn't appeared by now, Live Captions is probably showing its first-run setup.
     private static readonly TimeSpan SetupHintDelay = TimeSpan.FromSeconds(5);
 
-    private readonly AppSettings _settings;
     private readonly LiveCaptionsReader _reader = new();
     private readonly CaptionTracker _tracker;
-    private readonly TranscriptWriter? _transcript;
+    private readonly object _transcriptLock = new();
+    private readonly int _pollIntervalMs;
+    private TranscriptWriter? _transcript;
+    private string? _transcriptFolder;
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private volatile bool _hideLiveCaptions;
+    private volatile LiveCaptionsHideMethod _hideMethod;
     private DateTime _attachedAt;
     private bool _setupHintShown;
     private bool _dockedNoticeShown;
 
     public CaptionService(AppSettings settings)
     {
-        _settings = settings;
         _tracker = new CaptionTracker(TimeSpan.FromMilliseconds(settings.IdleFinalizeMs));
-        _transcript = settings.SaveTranscript ? new TranscriptWriter(settings.ResolveTranscriptFolder()) : null;
-        _hideLiveCaptions = settings.HideLiveCaptionsWindow;
+        _pollIntervalMs = settings.PollIntervalMs;
+        ApplySettings(settings);
     }
 
     public event Action<CaptionUpdate>? CaptionsUpdated;
@@ -52,6 +54,30 @@ internal sealed class CaptionService
     /// <summary>Hides or shows the original Live Captions window. Applied on the next poll.</summary>
     public void SetLiveCaptionsHidden(bool hidden) => _hideLiveCaptions = hidden;
 
+    /// <summary>Applies changed settings: transcript on/off and folder, and how Live Captions is hidden.</summary>
+    public void ApplySettings(AppSettings settings)
+    {
+        lock (_transcriptLock)
+        {
+            string folder = settings.ResolveTranscriptFolder();
+            if (!settings.SaveTranscript || !string.Equals(folder, _transcriptFolder, StringComparison.OrdinalIgnoreCase))
+            {
+                _transcript?.Dispose();
+                _transcript = null;
+                _transcriptFolder = null;
+            }
+
+            if (settings.SaveTranscript && _transcript is null)
+            {
+                _transcript = new TranscriptWriter(folder);
+                _transcriptFolder = folder;
+            }
+        }
+
+        _hideMethod = settings.HideMethod;
+        _hideLiveCaptions = settings.HideLiveCaptionsWindow;
+    }
+
     /// <summary>Stops polling, saves any unfinished sentence and gives Live Captions its window back.</summary>
     public async Task StopAsync()
     {
@@ -66,18 +92,23 @@ internal sealed class CaptionService
         _cts = null;
         _loop = null;
 
-        foreach (string sentence in _tracker.Flush())
+        lock (_transcriptLock)
         {
-            _transcript?.Append(sentence, DateTimeOffset.Now);
+            foreach (string sentence in _tracker.Flush())
+            {
+                _transcript?.Append(sentence, DateTimeOffset.Now);
+            }
+
+            _transcript?.Dispose();
+            _transcript = null;
         }
 
-        _transcript?.Dispose();
         _reader.Show();
     }
 
     private async Task RunAsync(CancellationToken ct)
     {
-        var interval = TimeSpan.FromMilliseconds(_settings.PollIntervalMs);
+        var interval = TimeSpan.FromMilliseconds(_pollIntervalMs);
         while (!ct.IsCancellationRequested)
         {
             try
@@ -141,6 +172,13 @@ internal sealed class CaptionService
 
         if (_reader.IsHidden)
         {
+            if (_reader.HideMethod != _hideMethod)
+            {
+                // The hiding method was changed in settings: undo the old one; the next poll hides it the new way.
+                _reader.Show();
+                return;
+            }
+
             _reader.KeepHidden();
             return;
         }
@@ -158,7 +196,7 @@ internal sealed class CaptionService
             return;
         }
 
-        _reader.Hide(_settings.HideMethod);
+        _reader.Hide(_hideMethod);
         StatusChanged?.Invoke(null);
         if (_reader.IsDocked && !_dockedNoticeShown)
         {
@@ -178,9 +216,12 @@ internal sealed class CaptionService
         }
 
         var now = DateTimeOffset.Now;
-        foreach (string sentence in update.NewSentences)
+        lock (_transcriptLock)
         {
-            _transcript?.Append(sentence, now);
+            foreach (string sentence in update.NewSentences)
+            {
+                _transcript?.Append(sentence, now);
+            }
         }
 
         CaptionsUpdated?.Invoke(update);

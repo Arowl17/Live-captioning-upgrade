@@ -6,25 +6,28 @@ namespace LiveCaptionsUpgrade;
 
 /// <summary>
 /// Notification-area icon and the options menu. The same menu opens when the overlay is
-/// right-clicked; the tray icon is how to reach it once the overlay is click-through.
+/// right-clicked; the tray icon is how to reach it once the overlay is hidden or click-through.
 /// </summary>
 internal sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _icon;
+    private readonly ToolStripMenuItem _showCaptionsItem;
     private readonly ToolStripMenuItem _clickThroughItem;
     private readonly ToolStripMenuItem _showLiveCaptionsItem;
 
     public TrayIcon(App app)
     {
+        _showCaptionsItem = new ToolStripMenuItem("Show captions", null, (_, _) => app.ToggleOverlayVisible());
         _clickThroughItem = new ToolStripMenuItem("Lock overlay (clicks pass through)", null, (_, _) => app.ToggleClickThrough());
         _showLiveCaptionsItem = new ToolStripMenuItem("Show original Live Captions window", null, (_, _) => app.ToggleLiveCaptionsWindow());
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add(_showCaptionsItem);
         menu.Items.Add(_clickThroughItem);
         menu.Items.Add(_showLiveCaptionsItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Settings…", null, (_, _) => app.OpenSettings());
         menu.Items.Add("Open transcripts folder", null, (_, _) => app.OpenTranscriptsFolder());
-        menu.Items.Add("Edit settings (restart to apply)", null, (_, _) => app.OpenSettingsFile());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => app.ExitApp());
 
@@ -37,8 +40,10 @@ internal sealed class TrayIcon : IDisposable
         };
     }
 
-    public void Refresh(bool clickThrough, bool liveCaptionsVisible)
+    public void Refresh(bool captionsVisible, string hotkey, bool clickThrough, bool liveCaptionsVisible)
     {
+        _showCaptionsItem.Checked = captionsVisible;
+        _showCaptionsItem.ShortcutKeyDisplayString = hotkey.Length > 0 ? hotkey : null;
         _clickThroughItem.Checked = clickThrough;
         _showLiveCaptionsItem.Checked = liveCaptionsVisible;
     }

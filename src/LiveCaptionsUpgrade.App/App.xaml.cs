@@ -16,7 +16,29 @@ public partial class App : Application
     private CaptionService? _service;
     private OverlayWindow? _overlay;
     private TrayIcon? _tray;
+    private GlobalHotkey? _hotkey;
+    private SettingsWindow? _settingsWindow;
     private bool _cleanedUp;
+
+    internal void ToggleOverlayVisible()
+    {
+        if (_overlay is null)
+        {
+            return;
+        }
+
+        // Captions keep being collected while hidden, so earlier text can be scrolled back to after showing it again.
+        if (_overlay.Visibility == Visibility.Visible)
+        {
+            _overlay.Hide();
+        }
+        else
+        {
+            _overlay.Show();
+        }
+
+        RefreshTray();
+    }
 
     internal void ToggleClickThrough()
     {
@@ -38,11 +60,25 @@ public partial class App : Application
         OpenWithShell(folder);
     }
 
-    internal void OpenSettingsFile()
+    internal void OpenSettings()
     {
-        _overlay?.StoreBounds();
-        _settings.Save(_settingsPath);
-        OpenWithShell(_settingsPath);
+        if (_settingsWindow is not null)
+        {
+            _settingsWindow.Activate();
+            return;
+        }
+
+        // Pause the shortcut so it can be typed into the shortcut box instead of hiding the captions.
+        _hotkey?.Unregister();
+        _settingsWindow = new SettingsWindow(_settings);
+        _settingsWindow.Applied += ApplySettings;
+        _settingsWindow.Closed += (_, _) =>
+        {
+            _settingsWindow = null;
+            RegisterHotkey();
+        };
+        _settingsWindow.Show();
+        _settingsWindow.Activate();
     }
 
     internal void ExitApp()
@@ -71,7 +107,10 @@ public partial class App : Application
         _overlay = new OverlayWindow(_settings);
         _tray = new TrayIcon(this);
         _overlay.MenuRequested += (_, _) => _tray.ShowMenuAtCursor();
-        RefreshTray();
+
+        _hotkey = new GlobalHotkey(_overlay);
+        _hotkey.Pressed += (_, _) => ToggleOverlayVisible();
+        RegisterHotkey();
 
         _service = new CaptionService(_settings);
         _service.CaptionsUpdated += update => Dispatcher.InvokeAsync(() => _overlay.ShowUpdate(update));
@@ -80,6 +119,7 @@ public partial class App : Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         _overlay.Show();
+        RefreshTray();
         _service.Start();
     }
 
@@ -93,6 +133,36 @@ public partial class App : Application
     {
         Cleanup();
         base.OnSessionEnding(e);
+    }
+
+    private void ApplySettings(AppSettings updated)
+    {
+        _settings = updated;
+        _overlay?.ApplySettings(updated);
+        _service?.ApplySettings(updated);
+
+        // While the settings window is open the shortcut stays paused; it is registered when the window closes.
+        if (_settingsWindow is null)
+        {
+            RegisterHotkey();
+        }
+
+        RefreshTray();
+        SaveSettings();
+    }
+
+    private void RegisterHotkey()
+    {
+        if (_hotkey is null)
+        {
+            return;
+        }
+
+        Hotkey.TryParse(_settings.ToggleHotkey, out var hotkey);
+        if (!_hotkey.Register(hotkey))
+        {
+            _tray?.ShowNotice($"The shortcut {hotkey} is already used by another app. Choose a different one in Settings.");
+        }
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -116,27 +186,37 @@ public partial class App : Application
         // The polling loop runs on the thread pool without capturing this thread, so blocking here cannot deadlock.
         _service?.StopAsync().GetAwaiter().GetResult();
 
+        _settingsWindow?.Close();
+        _hotkey?.Dispose();
         if (_overlay is not null)
         {
             _overlay.StoreBounds();
             _overlay.Close();
         }
 
+        SaveSettings();
+        _tray?.Dispose();
+        _singleInstance.ReleaseMutex();
+        _singleInstance.Dispose();
+    }
+
+    private void SaveSettings()
+    {
         try
         {
             _settings.Save(_settingsPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Losing the window position is not worth a crash on exit.
+            // Not worth a crash; the settings stay in effect until the app closes.
         }
-
-        _tray?.Dispose();
-        _singleInstance.ReleaseMutex();
-        _singleInstance.Dispose();
     }
 
-    private void RefreshTray() => _tray?.Refresh(_settings.ClickThrough, !_settings.HideLiveCaptionsWindow);
+    private void RefreshTray() => _tray?.Refresh(
+        captionsVisible: _overlay?.Visibility == Visibility.Visible,
+        hotkey: _settings.ToggleHotkey,
+        clickThrough: _settings.ClickThrough,
+        liveCaptionsVisible: !_settings.HideLiveCaptionsWindow);
 
     private static void OpenWithShell(string path) =>
         Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();

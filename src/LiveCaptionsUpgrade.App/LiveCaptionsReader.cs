@@ -60,6 +60,9 @@ internal sealed class LiveCaptionsReader
 
     public bool IsHidden => _saved is not null;
 
+    /// <summary>The method used by the current <see cref="Hide"/>.</summary>
+    public LiveCaptionsHideMethod HideMethod => _hideMethod;
+
     /// <summary>
     /// True if Live Captions was docked to the top or bottom of the screen when it was hidden. Windows keeps
     /// that strip of the screen reserved for it, so it shows up as empty space while Live Captions is invisible.

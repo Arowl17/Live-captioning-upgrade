@@ -38,15 +38,25 @@ public sealed class TranscriptAndSettingsTests : IDisposable
     public void Settings_round_trip()
     {
         string path = Path.Combine(_dir, "settings.json");
-        var settings = new AppSettings { FontSize = 40, HistoryLines = 3, WindowLeft = 12.5, ClickThrough = true };
+        var settings = new AppSettings
+        {
+            FontSize = 40,
+            ScrollbackMinutes = 15,
+            WindowLeft = 12.5,
+            ClickThrough = true,
+            AlwaysOnTop = false,
+            ToggleHotkey = "Ctrl+Shift+F2",
+        };
 
         settings.Save(path);
         var loaded = AppSettings.Load(path);
 
         Assert.Equal(40, loaded.FontSize);
-        Assert.Equal(3, loaded.HistoryLines);
+        Assert.Equal(15, loaded.ScrollbackMinutes);
         Assert.Equal(12.5, loaded.WindowLeft);
         Assert.True(loaded.ClickThrough);
+        Assert.False(loaded.AlwaysOnTop);
+        Assert.Equal("Ctrl+Shift+F2", loaded.ToggleHotkey);
     }
 
     [Fact]
@@ -72,6 +82,51 @@ public sealed class TranscriptAndSettingsTests : IDisposable
         Assert.Equal(96, loaded.FontSize);
         Assert.Equal(50, loaded.PollIntervalMs);
         Assert.Equal(1, loaded.BackgroundOpacity);
+    }
+
+    [Fact]
+    public void Defaults_keep_ten_minutes_and_use_ctrl_alt_h()
+    {
+        var settings = AppSettings.Load(Path.Combine(_dir, "none.json"));
+
+        Assert.Equal(10, settings.ScrollbackMinutes);
+        Assert.Equal("Ctrl+Alt+H", settings.ToggleHotkey);
+        Assert.True(settings.AlwaysOnTop);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(500, 60)]
+    public void Scrollback_minutes_are_clamped(int minutes, int expected)
+    {
+        var settings = new AppSettings { ScrollbackMinutes = minutes };
+        settings.Normalize();
+
+        Assert.Equal(expected, settings.ScrollbackMinutes);
+    }
+
+    [Theory]
+    [InlineData("control+alt+h", "Ctrl+Alt+H")]
+    [InlineData("H", "")]
+    [InlineData("", "")]
+    public void Hotkey_setting_is_tidied_or_disabled_when_invalid(string value, string expected)
+    {
+        var settings = new AppSettings { ToggleHotkey = value };
+        settings.Normalize();
+
+        Assert.Equal(expected, settings.ToggleHotkey);
+    }
+
+    [Fact]
+    public void Clone_is_independent()
+    {
+        var original = new AppSettings { FontSize = 30 };
+        var copy = original.Clone();
+
+        copy.FontSize = 50;
+
+        Assert.Equal(30, original.FontSize);
+        Assert.Equal(50, copy.FontSize);
     }
 
     [Fact]

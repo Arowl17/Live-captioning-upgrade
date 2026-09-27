@@ -8,7 +8,9 @@ This app reads Live Captions' text as it appears and gives you:
 
 - **A movable, resizable overlay**: pick the font, size, colours and background opacity, and place it anywhere,
   even over full-screen video.
-- **Clean sentence history**: finished sentences stay on screen above the one being spoken.
+- **Scroll back with the mouse wheel** through the last 10 minutes (adjustable). Older text is deleted from memory automatically.
+- **Show/hide shortcut** (Ctrl+Alt+H by default) to get the captions out of the way and back again.
+- **A settings window** for the look, the shortcut, scroll-back length, transcripts and how Live Captions is hidden.
 - **Automatic transcripts**: every finished sentence is saved, with a timestamp, to a text file.
 - **Click-through mode**: lock the overlay so clicks go to the window underneath.
 - **Only this app's captions are on screen.** The original Live Captions window keeps running but is
@@ -79,17 +81,23 @@ Live Captions is not minimised, because a minimised window might stop updating i
 The app checks this every poll and re-applies it if Live Captions undoes it. When you exit, the Live Captions
 window is put back exactly where it was.
 
-If captions ever stop updating while Live Captions is hidden, set `"HideMethod": "Minimize"` in the settings
-to use plain minimising instead.
+If captions ever stop updating while Live Captions is hidden, go to **Settings → Windows Live Captions →
+How to hide it** and choose **Minimize**.
 
 ## Using it
 
 - **Drag** the overlay to move it; drag the bottom-right corner to resize.
+- **Scroll up** with the mouse wheel over the captions to read earlier text. While you're scrolled up the
+  text stays still; scroll back down or click **Back to live** to follow the conversation again.
+- **Ctrl+Alt+H** hides and shows the captions from any app. Captions keep being collected while hidden,
+  so you can scroll back to anything said in the meantime.
 - **Right-click** the overlay, or the tray icon in the notification area, for options:
-  - *Lock overlay (clicks pass through)*: once locked, the tray icon is the way back to the menu.
+  - *Show captions*: same as the shortcut
+  - *Lock overlay (clicks pass through)*: once locked, the tray icon is the way back to the menu. Scrolling
+    doesn't work while locked.
   - *Show original Live Captions window*
+  - *Settings…*
   - *Open transcripts folder*: by default `Documents\LiveCaptionsUpgrade\Transcripts`
-  - *Edit settings*
   - *Exit*: saves the last unfinished sentence and restores the Live Captions window.
 
 The *Show original Live Captions window* option is how you reach Live Captions' own settings, for example
@@ -97,7 +105,8 @@ to change the language or turn on microphone audio. Untick it to hide Live Capti
 
 ## Settings
 
-Settings are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. Edit the file, then restart the app.
+Change settings from **Settings…** in the right-click or tray menu; they apply immediately.
+They are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. If you edit that file by hand, restart the app.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -105,14 +114,16 @@ Settings are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. Edit the f
 | `TextColor` | `#FFFFFF` | Sentence being spoken |
 | `HistoryTextColor` | `#B8B8B8` | Finished sentences above it |
 | `BackgroundColor` / `BackgroundOpacity` | `#000000` / `0.7` | Overlay background (opacity 0–1) |
-| `HistoryLines` | `2` | Finished sentences kept on screen (0–10) |
-| `ClickThrough` | `false` | Start with the overlay locked |
+| `ScrollbackMinutes` | `10` | How far back you can scroll (1–60 minutes) |
+| `ToggleHotkey` | `Ctrl+Alt+H` | Show/hide shortcut. Empty turns it off. |
+| `AlwaysOnTop` | `true` | Keep the captions above other windows |
+| `ClickThrough` | `false` | Overlay locked, clicks pass through |
 | `HideLiveCaptionsWindow` | `true` | Hide the original Live Captions window while running |
 | `HideMethod` | `Invisible` | `Invisible` (transparent and off screen, keeps running) or `Minimize` (fallback) |
 | `SaveTranscript` | `true` | Write finished sentences to a transcript file |
 | `TranscriptFolder` | *(empty)* | Transcript location. Empty means `Documents\LiveCaptionsUpgrade\Transcripts`. `%VARIABLES%` are expanded. |
-| `PollIntervalMs` | `150` | How often Live Captions is read |
-| `IdleFinalizeMs` | `1200` | Pause, in ms, after which a punctuated last sentence counts as finished |
+| `PollIntervalMs` | `150` | How often Live Captions is read (file only) |
+| `IdleFinalizeMs` | `1200` | Pause, in ms, after which a punctuated last sentence counts as finished (file only) |
 
 ## Project layout
 
@@ -122,11 +133,15 @@ src/LiveCaptionsUpgrade.Core/     Platform-independent logic (unit-tested)
   SentenceSplitter.cs               Sentence splitting (including CJK punctuation)
   TextSimilarity.cs                 Fuzzy matching for revised sentences
   TranscriptWriter.cs               Timestamped transcript files
+  Scrollback.cs                     Which scroll-back lines are old enough to delete
+  Hotkey.cs                         Shortcut parsing and formatting
   AppSettings.cs                    settings.json
 src/LiveCaptionsUpgrade.App/      Windows app (WPF)
   LiveCaptionsReader.cs             Finds/launches Live Captions and reads its text via UI Automation
   CaptionService.cs                 Background polling loop
-  OverlayWindow.xaml(.cs)           The caption bar
+  OverlayWindow.xaml(.cs)           The caption bar, with scroll-back
+  SettingsWindow.xaml(.cs)          Settings window
+  GlobalHotkey.cs                   System-wide show/hide shortcut
   TrayIcon.cs                       Notification-area icon and options menu
 tests/LiveCaptionsUpgrade.Core.Tests/
 ```
@@ -143,10 +158,3 @@ Run the tests with `dotnet test`. They also run on Linux and macOS.
   both versions.
 - If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible. Press
   **Win + Ctrl + L** twice to close and reopen it normally.
-
-## Ideas for next steps
-
-- Live translation of each finished sentence (e.g. DeepL, Azure Translator, or a local model).
-- Hotkeys to show/hide the overlay and toggle click-through.
-- A settings window instead of editing JSON.
-- Export transcripts as `.srt` subtitles.

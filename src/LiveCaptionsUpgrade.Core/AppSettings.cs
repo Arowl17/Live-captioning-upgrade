@@ -54,11 +54,17 @@ public sealed class AppSettings
 
     public double BackgroundOpacity { get; set; } = 0.7;
 
-    /// <summary>How many finished sentences to keep on screen above the live one.</summary>
-    public int HistoryLines { get; set; } = 2;
+    /// <summary>How many minutes of finished sentences can be scrolled back through. Older ones are discarded.</summary>
+    public int ScrollbackMinutes { get; set; } = 10;
 
     /// <summary>When true, mouse clicks pass through the overlay to the window underneath.</summary>
     public bool ClickThrough { get; set; }
+
+    /// <summary>Keep the overlay above all other windows.</summary>
+    public bool AlwaysOnTop { get; set; } = true;
+
+    /// <summary>Global shortcut that hides and shows the overlay, e.g. "Ctrl+Alt+H". Empty disables it.</summary>
+    public string ToggleHotkey { get; set; } = "Ctrl+Alt+H";
 
     public double? WindowLeft { get; set; }
 
@@ -112,7 +118,7 @@ public sealed class AppSettings
         IdleFinalizeMs = Math.Clamp(IdleFinalizeMs, 300, 10000);
         FontSize = Math.Clamp(FontSize, 8, 96);
         BackgroundOpacity = Math.Clamp(BackgroundOpacity, 0, 1);
-        HistoryLines = Math.Clamp(HistoryLines, 0, 10);
+        ScrollbackMinutes = Math.Clamp(ScrollbackMinutes, 1, 60);
         WindowWidth = Math.Max(WindowWidth, 200);
         WindowHeight = Math.Max(WindowHeight, 60);
         FontFamily = string.IsNullOrWhiteSpace(FontFamily) ? "Segoe UI" : FontFamily;
@@ -121,5 +127,9 @@ public sealed class AppSettings
         BackgroundColor = string.IsNullOrWhiteSpace(BackgroundColor) ? "#000000" : BackgroundColor;
         TranscriptFolder ??= string.Empty;
         HideMethod = Enum.IsDefined(HideMethod) ? HideMethod : LiveCaptionsHideMethod.Invisible;
+        ToggleHotkey = Hotkey.TryParse(ToggleHotkey, out var hotkey) ? hotkey.ToString() : string.Empty;
     }
+
+    /// <summary>Returns an independent copy, e.g. for a settings dialog to edit until OK is pressed.</summary>
+    public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }
