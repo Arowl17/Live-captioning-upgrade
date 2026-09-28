@@ -31,8 +31,28 @@ public class WindowTests
             }
         }
 
+        var environment = new List<string>();
         RunOnUiThread(() =>
         {
+            // Controls: does Live Captions start with nothing of ours open, or with a plain WPF window?
+            Thread.Sleep(3000);
+            if (CountLiveCaptions() > liveCaptionsBefore)
+            {
+                environment.Add("nothing (it started by itself)");
+                liveCaptionsBefore = CountLiveCaptions();
+            }
+
+            var plain = new Window { Content = new System.Windows.Controls.TextBox { Text = "plain" }, Width = 200, Height = 100 };
+            plain.Show();
+            DoEvents();
+            Thread.Sleep(1500);
+            plain.Close();
+            if (CountLiveCaptions() > liveCaptionsBefore)
+            {
+                environment.Add("a plain WPF window");
+                liveCaptionsBefore = CountLiveCaptions();
+            }
+
             var app = new global::LiveCaptionsUpgrade.App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             string folder = Path.Combine(Path.GetTempPath(), "lcu-windows-" + Guid.NewGuid().ToString("N"));
             var sharing = new SharingController(new PairingStore(Path.Combine(folder, "pairing.json")), DeviceIdentity.Create, "TEST-PC", "test", tcpPort: 0, discoveryPort: 0);
@@ -87,7 +107,9 @@ public class WindowTests
         });
 
         // Only reading captions may start Live Captions; opening windows or showing shared captions must not.
-        Assert.True(startedAfter.Count == 0, "Live Captions started after: " + string.Join(", ", startedAfter));
+        Assert.True(startedAfter.Count == 0,
+            "Live Captions started after: " + string.Join(", ", startedAfter) + ". Before our code ran, it started after: "
+            + (environment.Count == 0 ? "-" : string.Join(", ", environment)));
     }
 
     private static int CountLiveCaptions()
