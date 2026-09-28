@@ -18,6 +18,7 @@ public class WindowTests
     [Fact]
     public void Every_window_opens_and_works_with_captions_and_settings()
     {
+        int liveCaptionsBefore = CountLiveCaptions();
         RunOnUiThread(() =>
         {
             var app = new global::LiveCaptionsUpgrade.App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
@@ -68,6 +69,21 @@ public class WindowTests
                 }
             }
         });
+
+        // Only reading captions may start Live Captions; opening windows or showing shared captions must not.
+        Thread.Sleep(2000);
+        Assert.Equal(liveCaptionsBefore, CountLiveCaptions());
+    }
+
+    private static int CountLiveCaptions()
+    {
+        var processes = System.Diagnostics.Process.GetProcessesByName("LiveCaptions");
+        foreach (var process in processes)
+        {
+            process.Dispose();
+        }
+
+        return processes.Length;
     }
 
     /// <summary>Lets pending layout, rendering and loaded events run.</summary>
