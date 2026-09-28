@@ -245,11 +245,91 @@ public class CaptionTrackerTests
             {
                 "Delivery.",
                 "Uh, 4100 Maple Grove, uh.",
-                "Riverside, Texas seven.",
+
+                // "Riverside, Texas seven." stayed in the live text: the zip code was still being read out.
                 "Riverside TX 75231 in the main.",
                 "Pick up building, the main building.",
             },
             _emitted);
+    }
+
+    [Fact]
+    public void A_number_read_out_digit_by_digit_is_not_repeated()
+    {
+        // Live Captions puts each digit in a sentence of its own, then joins and rewrites them as the number goes on.
+        const string Before = "Yes, from the Northside location. That's the place to mess up the order.";
+        Feed(Before + " Three.");
+        Feed(Before + " Three. Three");
+        Feed(Before + " Three, three, zero.");
+        Feed(Before + " Three, three, zero. Six");
+        Feed(Before + " 3306.");
+        Feed(Before + " 3306. One.");
+        Feed(Before + " 3306. One. Two");
+        Feed(Before + " 3306. 12.");
+        Feed(Before + " 3306. 12. Seven.");
+        Feed(Before + " 3306. 12. Seven. Seven");
+        Feed(Before + " 3306. 12. Seven, seven.");
+        Feed(Before + " 3306. 12. Seven, seven. Five");
+        Feed(Before + " 3306. 12. Seven, seven, five, zero.");
+        Feed(Before + " 3306. 12. Seven, seven, five, zero. Four");
+        Feed(Before + " 3306. 12. 7750.");
+        Feed(Before + " 3306. 12. 7750. Four.");
+        Feed(Before + " 3306. 12. 7750. Four. One");
+        Feed(Before + " 3306. 12. 7750. 41.");
+        Feed(Before + " 3306. 12. 7750. 41. Thank you");
+
+        Assert.Single(_emitted, "3306.");
+        Assert.Single(_emitted, "12.");
+        Assert.Single(_emitted, "7750.");
+        Assert.Single(_emitted, "41.");
+        Assert.True(_emitted.Count <= 14, string.Join(" | ", _emitted));
+    }
+
+    [Fact]
+    public void A_card_number_read_in_groups_stays_live_until_it_is_complete()
+    {
+        Feed("What's the card number? Four");
+        Feed("What's the card number? Four. One");
+        Feed("What's the card number? Four, one. One. One");
+        Feed("What's the card number? 4111. One");
+        Feed("What's the card number? 4111. One, one. One");
+        Feed("What's the card number? 4111 1111. Two");
+        var live = Feed("What's the card number? 4111 1111. Two, two. Two");
+
+        Assert.Equal(new[] { "What's the card number?" }, _emitted);
+        Assert.Equal("4111 1111. Two, two. Two", live.Pending);
+
+        Feed("What's the card number? 4111 1111 2222. And the expiry");
+
+        Assert.Equal(new[] { "What's the card number?", "4111 1111 2222." }, _emitted);
+    }
+
+    [Fact]
+    public void A_number_at_the_end_of_speech_is_emitted_after_the_pause()
+    {
+        Feed("My zip is 75231.");
+        Feed("My zip is 75231.", advanceMs: 1100);
+
+        Assert.Equal(new[] { "My zip is 75231." }, _emitted);
+    }
+
+    [Fact]
+    public void The_same_short_number_said_again_is_shown_again()
+    {
+        Feed("The code is 12. 12. Yes");
+        Feed("The code is 12. 12. Yes, 12. OK");
+
+        Assert.Equal(new[] { "The code is 12.", "12.", "Yes, 12." }, _emitted);
+    }
+
+    [Fact]
+    public void A_corrected_number_is_not_mistaken_for_the_earlier_one()
+    {
+        Feed("It's 3306. Four");
+        Feed("It's 3306. Sorry");
+        Feed("It's 3306. Sorry, 3307. OK");
+
+        Assert.Equal(new[] { "It's 3306.", "Sorry, 3307." }, _emitted);
     }
 
     [Fact]
@@ -261,7 +341,8 @@ public class CaptionTrackerTests
         Feed("Card number is 4111 1111 1111 1111. Expiry is 0327. And the code");
         Feed("Card number is 4111 1111 1111 1111. Expiry is 0327. And the code is 123. OK");
 
-        Assert.Single(_emitted, "Card number is 4111 1111 1111 1111.");
+        Assert.Single(_emitted, sentence => sentence.Contains("4111 1111 1111 1111", StringComparison.Ordinal));
+        Assert.DoesNotContain(_emitted, sentence => sentence is "Four." or "One.");
         Assert.Single(_emitted, "Expiry is 0327.");
         Assert.Single(_emitted, "And the code is 123.");
     }
@@ -276,7 +357,7 @@ public class CaptionTrackerTests
         Feed("What is the apartment number? 75. And the gate");
         Feed("What is the apartment number? 75. And the gate code is 1234. OK");
 
-        Assert.Equal(new[] { "What is the apartment number?", "Seven.", "75.", "And the gate code is 1234." }, _emitted);
+        Assert.Equal(new[] { "What is the apartment number?", "75.", "And the gate code is 1234." }, _emitted);
     }
 
     [Fact]

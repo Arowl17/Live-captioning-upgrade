@@ -123,6 +123,36 @@ public class LiveCaptionsSimulationTests
         Assert.True(shown.Length - common <= options.EarlyWords, $"{shown.Length - common} extra words, early versions had {options.EarlyWords}");
     }
 
+    [Theory]
+    [MemberData(nameof(Seeds))]
+    public void Numbers_read_out_digit_by_digit_are_never_repeated(int seed)
+    {
+        // A phone number, card number or code read out a digit at a time: Live Captions shows each digit as a sentence
+        // of its own, joins them ("Seven, seven, two."), and rewrites them as digits ("772."), in chunks.
+        var random = new Random(seed);
+        var script = Enumerable.Range(0, 40)
+            .Select(i => random.NextDouble() < 0.4 ? RandomNumber(random) : RandomSentence(random, 2, 12))
+            .ToList();
+        var options = new SimulationOptions { DigitByDigit = true, RewriteChance = 0.05 };
+
+        var (emitted, _) = Simulate(script, random, options);
+
+        // Spelled-out digits ("zero.", "Seven, seven.") may show up while a number is read out with pauses; anything
+        // else (sentences, and numbers in digits) no more often than said or shown early.
+        foreach (var shownSentence in emitted.GroupBy(sentence => sentence).Where(g => !IsSpelledDigits(g.Key)))
+        {
+            int saidTimes = script.Concat(options.EarlyVersions).Count(sentence => sentence == shownSentence.Key);
+            Assert.True(shownSentence.Count() <= Math.Max(saidTimes, 1),
+                $"\"{shownSentence.Key}\" was shown {shownSentence.Count()} times\nSHOWN: " + string.Join(" | ", emitted));
+        }
+
+        string[] said = Words(script);
+        string[] shown = Words(emitted);
+        int common = CommonSubsequenceLength(said, shown);
+        Assert.True(said.Length - common <= options.Rewrites, $"Lost {said.Length - common} words\nSHOWN: " + string.Join(" | ", emitted));
+        Assert.True(shown.Length - common <= options.EarlyWords, $"{shown.Length - common} extra words, early versions had {options.EarlyWords}");
+    }
+
     [Fact]
     public void Sentences_that_differ_only_in_numbers_are_all_kept()
     {
@@ -198,6 +228,12 @@ public class LiveCaptionsSimulationTests
         foreach (string sentence in script)
         {
             int sentenceStart = words.Count;
+            if (options.DigitByDigit && sentence.Length > 1 && sentence[..^1].All(char.IsDigit))
+            {
+                ReadOutDigits(sentence[..^1]);
+                continue;
+            }
+
             string[] sentenceWords = sentence.Split(' ');
             for (int w = 0; w < sentenceWords.Length; w++)
             {
@@ -304,6 +340,63 @@ public class LiveCaptionsSimulationTests
         Show(2000);
         emitted.AddRange(tracker.Flush());
         return (emitted, string.Join(" ", words));
+
+        void ReadOutDigits(string number)
+        {
+            int start = words.Count;
+            int done = 0; // digits already rewritten as a number at the start
+            for (int d = 0; d < number.Length; d++)
+            {
+                // The digit first looks like a sentence of its own...
+                string digit = DigitWords[number[d] - '0'];
+                bool closed = random.NextDouble() < 0.5;
+                words.Add(char.ToUpperInvariant(digit[0]) + digit[1..] + (closed ? "." : string.Empty));
+                if (closed)
+                {
+                    Early(words[^1]);
+                }
+
+                Show(random.NextDouble() < 0.3 ? 1500 : 150);
+
+                // ...then it's joined to the number so far, and now and then the lot is rewritten as digits.
+                words.RemoveRange(start, words.Count - start);
+                if (random.NextDouble() < 0.4)
+                {
+                    done = d + 1;
+                }
+
+                if (done > 0)
+                {
+                    words.Add(number[..done] + ".");
+                    Early(words[^1]);
+                }
+
+                var spelled = number[done..(d + 1)].Select(c => DigitWords[c - '0']).ToList();
+                for (int w = 0; w < spelled.Count; w++)
+                {
+                    string word = w == 0 ? char.ToUpperInvariant(spelled[w][0]) + spelled[w][1..] : spelled[w];
+                    words.Add(word + (w < spelled.Count - 1 ? "," : "."));
+                }
+
+                if (spelled.Count > 0)
+                {
+                    Early(string.Join(" ", words.Skip(words.Count - spelled.Count)));
+                }
+
+                Show();
+            }
+
+            words.RemoveRange(start, words.Count - start);
+            words.Add(number + ".");
+            Show();
+        }
+
+        // A version of the number that looks finished and may be emitted before Live Captions settles on the final one.
+        void Early(string text)
+        {
+            options.EarlyVersions.Add(text);
+            options.EarlyWords += text.Split(' ').Length;
+        }
     }
 
     /// <summary>The words of some text, ignoring case and punctuation.</summary>
@@ -359,6 +452,8 @@ public class LiveCaptionsSimulationTests
 
         public double RewriteChance { get; init; }
 
+        public bool DigitByDigit { get; init; }
+
         /// <summary>Counted while simulating: sentences ended too soon and rewritten, and the words of their early versions.</summary>
         public int Rewrites { get; set; }
 
@@ -368,6 +463,14 @@ public class LiveCaptionsSimulationTests
     }
 
     private static readonly string[] NumberWords = { "seven", "five", "two", "three", "nine", "zero" };
+
+    private static readonly string[] DigitWords = { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
+
+    private static bool IsSpelledDigits(string sentence) =>
+        Words(sentence).All(word => DigitWords.Contains(word));
+
+    private static string RandomNumber(Random random) =>
+        string.Concat(Enumerable.Range(0, random.Next(2, 8)).Select(_ => (char)('0' + random.Next(10)))) + ".";
 
     /// <summary>Length of the longest sequence of words appearing in both, in the same order.</summary>
     private static int CommonSubsequenceLength(string[] a, string[] b)

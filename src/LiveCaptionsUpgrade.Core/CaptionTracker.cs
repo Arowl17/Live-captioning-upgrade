@@ -175,6 +175,17 @@ public sealed class CaptionTracker
 
         finalCount = Math.Max(finalCount, 0);
 
+        // A number being read out (a phone or card number, a zip code) comes a few digits at a time, and Live Captions
+        // keeps splitting, joining and rewriting it ("Seven." "Seven, seven." "7750."). While the text still goes on
+        // with a number, keep the sentences ending in one in the live text, and emit them once the number is over.
+        if (!includeTerminatedLast && !includeUnterminatedLast && finalCount == segments.Count - 1 && StartsWithNumber(texts[^1]))
+        {
+            while (finalCount > anchor + 1 && EndsWithNumber(texts[finalCount - 1]))
+            {
+                finalCount--;
+            }
+        }
+
         var added = new List<string>();
         int committedBefore = _committed.Count;
         for (int i = anchor + 1; i < finalCount; i++)
@@ -227,52 +238,126 @@ public sealed class CaptionTracker
             return;
         }
 
-        // Some of them may have been rewritten since, so they aren't visible as such any more: "Riverside, Texas seven."
-        // became "Riverside TX 75231 in the main." (emitted after it), or the last one emitted was early and is now part
-        // of the sentence being spoken. Skip the longest run of them that the text starts with, word for word and
-        // ending where a finished sentence ends.
-        for (int first = firstMerged; first < _committed.Count; first++)
+        // Some of them may have been rewritten since, so they aren't visible as such any more. Reading out an address
+        // or a number, Live Captions ends sentences too soon and rewrites them as it hears more: "Riverside, Texas seven."
+        // becomes "Riverside TX 75231 in the main.", "One." and "Two" become "12.". Go through the finished sentences
+        // shown, in order: each that is one emitted (or a few emitted ones joined), with any emitted in between
+        // rewritten away, was emitted already.
+        int nextCommitted = firstMerged;
+        int lastShown = -1;
+        for (int s = firstSegment; s < texts.Length; s++)
         {
-            for (int last = _committed.Count - 1; last >= first; last--)
+            if (normalized[s].Length == 0)
             {
-                var emitted = CommittedWords(first, last);
-                var shown = VisibleWords(texts, firstSegment, emitted.Count);
-                if (shown.Count == emitted.Count && EndsFinishedSentence(texts, shown[^1])
-                    && shown.Select(word => word.Key).Zip(emitted).All(pair => pair.First == pair.Second || IsSameWord(pair.First, pair.Second)))
+                continue;
+            }
+
+            int matchedUpTo = IsFinishedSentence(texts[s]) ? FindEmitted(normalized[s], nextCommitted) : -1;
+            if (matchedUpTo < 0)
+            {
+                break;
+            }
+
+            lastShown = s;
+            nextCommitted = matchedUpTo;
+        }
+
+        if (lastShown < 0)
+        {
+            return;
+        }
+
+        for (int s = firstSegment; s <= lastShown; s++)
+        {
+            texts[s] = string.Empty;
+            normalized[s] = string.Empty;
+        }
+
+        // The next sentence may still start with words of the ones emitted after those.
+        var rest = MergedWords(texts, lastShown + 1, nextCommitted);
+        if (rest.Count > 0)
+        {
+            DropWords(texts, normalized, lastShown + 1, rest[^1]);
+        }
+    }
+
+    /// <summary>
+    /// Looks for <paramref name="sentence"/> among the committed sentences from <paramref name="from"/> on (a few
+    /// may be skipped, having been rewritten since), alone or a few joined. Returns the index after the match, or -1.
+    /// </summary>
+    private int FindEmitted(string sentence, int from)
+    {
+        for (int k = from; k < _committed.Count && k <= from + MaxRewrittenSentences; k++)
+        {
+            for (int count = 1; count <= MaxMergedSentences && k + count <= _committed.Count; count++)
+            {
+                if (SameSentence(sentence, Merged(k + count - 1, count)))
                 {
-                    DropWords(texts, normalized, firstSegment, shown[^1]);
-                    return;
+                    return k + count;
                 }
             }
         }
+
+        return -1;
     }
 
-    /// <summary>The words of committed sentences <paramref name="first"/> to <paramref name="last"/>.</summary>
-    private List<string> CommittedWords(int first, int last)
+    /// <summary>
+    /// The same words, allowing a small correction of a word, but not of a number: "3306" and "3307" are different
+    /// (a customer correcting a number must never be taken for the earlier one).
+    /// </summary>
+    private static bool SameSentence(string a, string b)
     {
-        var words = new List<string>();
-        for (int k = first; k <= last; k++)
+        if (string.Equals(a, b, StringComparison.Ordinal))
         {
-            words.AddRange(_committed[k].Normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            return true;
         }
 
-        return words;
-    }
-
-    /// <summary>True if the word ends its sentence, and that sentence is finished (not the one still being spoken).</summary>
-    private static bool EndsFinishedSentence(string[] texts, (int Segment, int Token, string Key) word)
-    {
-        string[] tokens = texts[word.Segment].Split(' ');
-        for (int t = tokens.Length - 1; t > word.Token; t--)
+        string[] wordsA = a.Split(' ');
+        string[] wordsB = b.Split(' ');
+        if (wordsA.Length != wordsB.Length)
         {
-            if (TextSimilarity.Normalize(tokens[t]).Length > 0)
+            return false;
+        }
+
+        for (int w = 0; w < wordsA.Length; w++)
+        {
+            string x = wordsA[w];
+            string y = wordsB[w];
+            if (x != y && (x.Any(char.IsDigit) || y.Any(char.IsDigit) || !IsSameWord(x, y)))
             {
                 return false;
             }
         }
 
-        return SentenceSplitter.Split(texts[word.Segment]) is [{ IsTerminated: true }];
+        return true;
     }
+
+    private static readonly HashSet<string> NumberWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+        "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty",
+        "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "double", "triple",
+    };
+
+    private static bool IsNumberWord(string token)
+    {
+        string word = TrimPunctuation(token).Trim(',', ';', ':', '-');
+        return word.Length > 0 && (word.Any(char.IsDigit) || NumberWords.Contains(word));
+    }
+
+    private static bool StartsWithNumber(string text)
+    {
+        string first = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+        return IsNumberWord(first);
+    }
+
+    private static bool EndsWithNumber(string text)
+    {
+        string last = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty;
+        return IsNumberWord(last);
+    }
+
+    private static bool IsFinishedSentence(string text) => SentenceSplitter.Split(text) is [{ IsTerminated: true }];
 
     /// <summary>How many words from <paramref name="firstSegment"/> on are the sentences emitted from <paramref name="firstMerged"/> on.</summary>
     private int MergedWordsAhead(string[] texts, int firstSegment, int firstMerged) =>

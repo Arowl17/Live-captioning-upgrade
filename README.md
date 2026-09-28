@@ -43,14 +43,16 @@ words are appended, recent words get corrected, and old lines scroll off the top
   and stitches its start back on once that scrolls away.
 - If Live Captions changes its mind about where a sentence ends after it was saved ("I called yesterday."
   becoming "I called yesterday, and they said no."), only the new words are added ("and they said no.").
-- Reading out an address or a number, Live Captions often ends a sentence too soon and rewrites it once it has
-  heard more: "Riverside, Texas seven." becomes "Riverside TX 75231 in the main." The early version has been shown by
-  then; the rewritten one is shown once, and the sentences around it aren't shown again.
+- Reading out an address or a number (phone, card, zip code), Live Captions splits it into pieces and keeps
+  rewriting it: "Seven." "Seven, seven." "7750.", or "Riverside, Texas seven." becoming "Riverside TX 75231 in the
+  main." While a number is still being read out, it stays in the live text, and it goes into the history once, in
+  its final form, when something other than a number follows (or after a pause). If a sentence was already shown
+  when Live Captions rewrites it, the rewritten one is shown once, and the sentences around it aren't shown again.
 - "Mr. Smith", "John A. Smith" and "3 p.m. today" don't split sentences.
 
 These rules are checked by a simulation test that replays thousands of calls the way Live Captions shows
 them (words arriving in bursts, corrections, late punctuation, merged sentences, sentences ended too soon and
-rewritten, text briefly going blank, old lines scrolling away) and verifies that every word comes out exactly
+rewritten, numbers read out digit by digit, text briefly going blank, old lines scrolling away) and verifies that every word comes out exactly
 once, or for rewritten sentences, that nothing is lost or shown again.
 
 ## Requirements
