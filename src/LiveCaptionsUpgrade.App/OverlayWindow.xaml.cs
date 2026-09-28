@@ -116,9 +116,21 @@ public partial class OverlayWindow : Window
     public void ShowUpdate(CaptionUpdate update)
     {
         var now = DateTimeOffset.Now;
+        var lines = new List<CaptionLine>(update.NewSentences.Count);
         foreach (string sentence in update.NewSentences)
         {
-            var paragraph = new Paragraph(new Run(sentence)) { Margin = new Thickness(0), Foreground = _historyBrush };
+            lines.Add(new CaptionLine(sentence, now));
+        }
+
+        ShowLines(lines, update.Pending);
+    }
+
+    /// <summary>Adds finished sentences (with when they were finished) and shows the sentence being spoken.</summary>
+    public void ShowLines(IReadOnlyList<CaptionLine> lines, string pending)
+    {
+        foreach (var line in lines)
+        {
+            var paragraph = new Paragraph(new Run(line.Text)) { Margin = new Thickness(0), Foreground = _historyBrush };
             if (_liveShown)
             {
                 Captions.Document.Blocks.InsertBefore(_liveParagraph, paragraph);
@@ -128,11 +140,11 @@ public partial class OverlayWindow : Window
                 Captions.Document.Blocks.Add(paragraph);
             }
 
-            _lines.Add(new CaptionLine(sentence, now));
+            _lines.Add(line);
             _paragraphs.Add(paragraph);
         }
 
-        SetLiveText(update.Pending);
+        SetLiveText(pending);
         PruneOldLines();
         RefreshStatus();
     }

@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using LiveCaptionsUpgrade.Core;
@@ -20,10 +18,8 @@ internal sealed class CaptionService
 
     private readonly LiveCaptionsReader _reader = new();
     private readonly CaptionTracker _tracker;
-    private readonly object _transcriptLock = new();
+    private readonly TranscriptRecorder _transcript;
     private readonly int _pollIntervalMs;
-    private TranscriptWriter? _transcript;
-    private string? _transcriptFolder;
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private volatile bool _hideLiveCaptions;
@@ -35,8 +31,9 @@ internal sealed class CaptionService
     private string? _status;
     private string _lastPending = string.Empty;
 
-    public CaptionService(AppSettings settings)
+    public CaptionService(AppSettings settings, TranscriptRecorder transcript)
     {
+        _transcript = transcript;
         _tracker = new CaptionTracker(TimeSpan.FromMilliseconds(settings.IdleFinalizeMs));
         _pollIntervalMs = settings.PollIntervalMs;
         ApplySettings(settings);
@@ -59,31 +56,14 @@ internal sealed class CaptionService
     /// <summary>Hides or shows the original Live Captions window. Applied on the next poll.</summary>
     public void SetLiveCaptionsHidden(bool hidden) => _hideLiveCaptions = hidden;
 
-    /// <summary>Applies changed settings: transcript on/off and folder, and how Live Captions is hidden.</summary>
+    /// <summary>Applies changed settings: how Live Captions is hidden.</summary>
     public void ApplySettings(AppSettings settings)
     {
-        lock (_transcriptLock)
-        {
-            string folder = settings.ResolveTranscriptFolder();
-            if (!settings.SaveTranscript || !string.Equals(folder, _transcriptFolder, StringComparison.OrdinalIgnoreCase))
-            {
-                _transcript?.Dispose();
-                _transcript = null;
-                _transcriptFolder = null;
-            }
-
-            if (settings.SaveTranscript && _transcript is null)
-            {
-                _transcript = new TranscriptWriter(folder);
-                _transcriptFolder = folder;
-            }
-        }
-
         _hideMethod = settings.HideMethod;
         _hideLiveCaptions = settings.HideLiveCaptionsWindow;
     }
 
-    /// <summary>Stops polling, saves any unfinished sentence and gives Live Captions its window back.</summary>
+    /// <summary>Stops polling, passes on any unfinished sentence and gives Live Captions its window back.</summary>
     public async Task StopAsync()
     {
         if (_cts is not null && _loop is not null)
@@ -95,13 +75,7 @@ internal sealed class CaptionService
             _loop = null;
         }
 
-        WriteTranscript(_tracker.Flush());
-        lock (_transcriptLock)
-        {
-            _transcript?.Dispose();
-            _transcript = null;
-        }
-
+        Publish(new CaptionUpdate(_tracker.Flush(), string.Empty, TextChanged: true));
         _reader.Show();
     }
 
@@ -238,46 +212,7 @@ internal sealed class CaptionService
 
         // Show the captions first; the transcript must never hold them up.
         CaptionsUpdated?.Invoke(update);
-        WriteTranscript(update.NewSentences);
-    }
-
-    private void WriteTranscript(IReadOnlyList<string> sentences)
-    {
-        if (sentences.Count == 0)
-        {
-            return;
-        }
-
-        string? error = null;
-        lock (_transcriptLock)
-        {
-            if (_transcript is null)
-            {
-                return;
-            }
-
-            try
-            {
-                var now = DateTimeOffset.Now;
-                foreach (string sentence in sentences)
-                {
-                    _transcript.Append(sentence, now);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-            {
-                // Stop trying for this session (it would fail on every sentence); captions carry on regardless.
-                _transcript.Dispose();
-                _transcript = null;
-                error = ex.Message;
-            }
-        }
-
-        if (error is not null)
-        {
-            Notice?.Invoke("Couldn't save the transcript, so saving is paused. Captions still work. "
-                + "Check the transcript folder in Settings. " + error);
-        }
+        _transcript.Write(update.NewSentences);
     }
 
     private void SetStatus(string? status)

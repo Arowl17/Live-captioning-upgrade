@@ -1,0 +1,224 @@
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
+
+namespace LiveCaptionsUpgrade.Core.Sharing;
+
+public enum FrameType : byte
+{
+    Control = 1,
+}
+
+/// <summary>
+/// A mutually authenticated TLS connection carrying length-prefixed frames:
+/// [u32 length][u8 type][payload]. Both sides present their device certificate; callers decide
+/// whether the peer's fingerprint is acceptable.
+/// </summary>
+public sealed class FramedConnection : IAsyncDisposable
+{
+    public const int DefaultPort = 47820;
+
+    /// <summary>Bounds what a peer (even an unpaired one, before it is rejected) can make us allocate.</summary>
+    private const int MaxFrameSize = 1024 * 1024;
+
+    private readonly TcpClient _tcp;
+    private readonly SslStream _ssl;
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly byte[] _header = new byte[4]; // frames are read by one reader at a time
+    private readonly byte[] _type = new byte[1];
+    private int _disposed;
+
+    private FramedConnection(TcpClient tcp, SslStream ssl, bool isInitiator)
+    {
+        _tcp = tcp;
+        _ssl = ssl;
+        IsInitiator = isInitiator;
+        PeerFingerprint = DeviceIdentity.FingerprintOf(ssl.RemoteCertificate!);
+        RemoteEndPoint = (IPEndPoint)tcp.Client.RemoteEndPoint!;
+    }
+
+    public bool IsInitiator { get; }
+
+    public string PeerFingerprint { get; }
+
+    public IPEndPoint RemoteEndPoint { get; }
+
+    public static async Task<FramedConnection> ConnectAsync(IPEndPoint endPoint, DeviceIdentity identity, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+        var tcp = new TcpClient(endPoint.AddressFamily) { NoDelay = true };
+        try
+        {
+            await tcp.ConnectAsync(endPoint, cts.Token).ConfigureAwait(false);
+            var ssl = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
+            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = "live-captions-upgrade",
+                ClientCertificateContext = identity.TlsContext,
+
+                // Self-signed by design: trust is established by pinning fingerprints, checked by the caller.
+                RemoteCertificateValidationCallback = static (_, certificate, _, _) => certificate is not null,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                EnabledSslProtocols = SslProtocols.None,
+            }, cts.Token).ConfigureAwait(false);
+            return new FramedConnection(tcp, ssl, isInitiator: true);
+        }
+        catch
+        {
+            tcp.Dispose();
+            throw;
+        }
+    }
+
+    public static async Task<FramedConnection> AcceptAsync(TcpClient tcp, DeviceIdentity identity, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+        tcp.NoDelay = true;
+        var ssl = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
+        try
+        {
+            await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+            {
+                ServerCertificateContext = identity.TlsContext,
+                ClientCertificateRequired = true,
+                RemoteCertificateValidationCallback = static (_, certificate, _, _) => certificate is not null,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                EnabledSslProtocols = SslProtocols.None,
+            }, cts.Token).ConfigureAwait(false);
+            return new FramedConnection(tcp, ssl, isInitiator: false);
+        }
+        catch
+        {
+            await ssl.DisposeAsync().ConfigureAwait(false);
+            tcp.Dispose();
+            throw;
+        }
+    }
+
+    public Task SendAsync(ControlMessage message, CancellationToken cancellationToken = default) =>
+        SendFrameAsync(FrameType.Control, ControlJson.Serialize(message), cancellationToken);
+
+    public async Task SendFrameAsync(FrameType type, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
+    {
+        if (payload.Length > MaxFrameSize)
+        {
+            throw new ArgumentException("Frame too large.", nameof(payload));
+        }
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(payload.Length + 5);
+        try
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(buffer, (uint)(payload.Length + 1));
+            buffer[4] = (byte)type;
+            payload.Span.CopyTo(buffer.AsSpan(5));
+            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _ssl.WriteAsync(buffer.AsMemory(0, payload.Length + 5), cancellationToken).ConfigureAwait(false);
+                await _ssl.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// <summary>Reads the next frame; returns null when the connection closed cleanly.</summary>
+    public async Task<(FrameType Type, byte[] Payload)?> ReceiveFrameAsync(CancellationToken cancellationToken)
+    {
+        if (!await ReadExactlyOrEndAsync(_header, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        uint length = BinaryPrimitives.ReadUInt32BigEndian(_header);
+        if (length is 0 or > MaxFrameSize + 1)
+        {
+            throw new InvalidDataException($"Invalid frame length {length}.");
+        }
+
+        if (!await ReadExactlyOrEndAsync(_type, cancellationToken).ConfigureAwait(false))
+        {
+            throw new EndOfStreamException();
+        }
+
+        byte[] payload = new byte[length - 1];
+        if (payload.Length > 0 && !await ReadExactlyOrEndAsync(payload, cancellationToken).ConfigureAwait(false))
+        {
+            throw new EndOfStreamException();
+        }
+
+        return ((FrameType)_type[0], payload);
+    }
+
+    /// <summary>Reads frames until the next control message, skipping frame types from newer versions.</summary>
+    public async Task<ControlMessage?> ReceiveControlAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var frame = await ReceiveFrameAsync(cancellationToken).ConfigureAwait(false);
+            if (frame is not { } f)
+            {
+                return null;
+            }
+
+            if (f.Type == FrameType.Control)
+            {
+                return ControlJson.Deserialize(f.Payload) ?? throw new InvalidDataException("Empty control message.");
+            }
+        }
+    }
+
+    private async Task<bool> ReadExactlyOrEndAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        int read = 0;
+        while (read < buffer.Length)
+        {
+            int n = await _ssl.ReadAsync(buffer[read..], cancellationToken).ConfigureAwait(false);
+            if (n == 0)
+            {
+                if (read == 0)
+                {
+                    return false;
+                }
+
+                throw new EndOfStreamException();
+            }
+
+            read += n;
+        }
+
+        return true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _ssl.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Already broken.
+        }
+
+        _tcp.Dispose();
+        _writeLock.Dispose();
+    }
+}

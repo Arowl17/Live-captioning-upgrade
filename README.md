@@ -15,6 +15,9 @@ This app reads Live Captions' text as it appears and gives you:
 - **Click-through mode**: lock the overlay so clicks go to the window underneath.
 - **Only this app's captions are on screen.** The original Live Captions window keeps running but is
   invisible: it has no taskbar button, doesn't appear in Alt+Tab, and clicks pass straight through it.
+- **Caption sharing between two computers**: a Windows 11 PC runs Live Captions and sends the captions over
+  your home network to another computer, such as a Windows 10 work laptop without Live Captions, which shows
+  them in the same caption bar. See [Caption sharing](#caption-sharing-two-computers).
 
 ## How it works
 
@@ -48,8 +51,9 @@ old lines scrolling away) and verifies that every word comes out exactly once.
 
 ## Requirements
 
-- Windows 11 version 22H2 or later (Live Captions is part of Windows)
-- [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). Windows offers to download it the first time you run the app if it is missing.
+- Windows 11 version 22H2 or later on the computer that runs Live Captions (Live Captions is part of Windows).
+  A computer that only shows captions from another one can run Windows 10.
+- Nothing else: the `.exe` includes .NET.
 
 ## First-time setup
 
@@ -71,10 +75,10 @@ old lines scrolling away) and verifies that every word comes out exactly once.
 dotnet run --project src/LiveCaptionsUpgrade.App
 ```
 
-To build a single `.exe`:
+To build a single `.exe` that runs without installing anything:
 
 ```powershell
-dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
+dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
 ```
 
 The app starts Live Captions for you if it isn't already running, and hides it as soon as its captions
@@ -112,6 +116,7 @@ How to hide it** and choose **Minimize**.
   - *Lock overlay (clicks pass through)*: once locked, the tray icon is the way back to the menu. Scrolling
     doesn't work while locked.
   - *Show original Live Captions window*
+  - *Caption sharing*: off, send or show, the connection status, and *Pair with a computer…*
   - *Settings…*
   - *Open transcripts folder*: by default `Documents\LiveCaptionsUpgrade\Transcripts`
   - *Exit*: saves the last unfinished sentence and restores the Live Captions window.
@@ -119,10 +124,43 @@ How to hide it** and choose **Minimize**.
 The *Show original Live Captions window* option is how you reach Live Captions' own settings, for example
 to change the language or turn on microphone audio. Untick it to hide Live Captions again.
 
+## Caption sharing (two computers)
+
+For when the call happens on one computer but Live Captions is on another. For example, the call plays on a
+Windows 10 work laptop (which has no Live Captions), and its sound reaches a Windows 11 PC (with an app like
+AudioRelay). The PC turns the call into captions, and they show up in the caption bar on the laptop.
+
+```
+Work laptop ──audio (AudioRelay)──▶ PC: Live Captions ──▶ Live Captions Upgrade ──captions──▶ Work laptop: caption bar
+```
+
+Set up once:
+
+1. Run Live Captions Upgrade on both computers. They must be on the same network.
+2. On the PC: right-click the captions (or the tray icon) → **Caption sharing** → **Send captions to another
+   computer**. On the laptop: → **Show captions from another computer**.
+   The first time, the app asks to allow itself through Windows Firewall. Windows then asks for permission
+   (on a work computer: the administrator password).
+3. A pairing window opens on both. The other computer appears in the list (or type the IP address the other
+   window shows). Click **Pair**, check that both screens show the same 6-digit code, and click
+   **The codes match** on both.
+
+From then on they reconnect by themselves, also after restarts. While sending, the PC's own caption bar is hidden
+(the shortcut still shows it). The laptop has the same caption bar as usual: scroll back, copy, shortcut,
+settings and its own transcripts. If the laptop connects in the middle of a call, or the connection drops for a
+while, it fills in what was said in the meantime (up to an hour) without repeating anything. If Live Captions has
+a problem on the PC, the laptop's caption bar says so.
+
+Only the paired computer can connect, both check each other's identity, and the captions are encrypted (TLS).
+Nothing leaves your network. The connection uses TCP port 47820, and computers find each other with UDP
+broadcasts on port 47821. **Forget** under **Settings → Caption sharing** unpairs both computers.
+
 ## Settings
 
 Change settings from **Settings…** in the right-click or tray menu; they apply immediately.
 They are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. If you edit that file by hand, restart the app.
+The paired computer is in `pairing.json` and this computer's encrypted identity in `identity.bin`, in the same
+folder. A log for troubleshooting is in `%LOCALAPPDATA%\LiveCaptionsUpgrade\logs`.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -136,6 +174,7 @@ They are stored in `%APPDATA%\LiveCaptionsUpgrade\settings.json`. If you edit th
 | `ClickThrough` | `false` | Overlay locked, clicks pass through |
 | `HideLiveCaptionsWindow` | `true` | Hide the original Live Captions window while running |
 | `HideMethod` | `Invisible` | `Invisible` (transparent and off screen, keeps running) or `Minimize` (fallback) |
+| `CaptionSharing` | `Off` | `Off`, `Send` (to the paired computer) or `Receive` (show the paired computer's captions) |
 | `SaveTranscript` | `true` | Write finished sentences to a transcript file |
 | `TranscriptFolder` | *(empty)* | Transcript location. Empty means `Documents\LiveCaptionsUpgrade\Transcripts`. `%VARIABLES%` are expanded. |
 | `PollIntervalMs` | `150` | How often Live Captions is read (file only) |
@@ -152,21 +191,31 @@ src/LiveCaptionsUpgrade.Core/     Platform-independent logic (unit-tested)
   Scrollback.cs                     Which scroll-back lines are old enough to delete
   Hotkey.cs                         Shortcut parsing and formatting
   AppSettings.cs                    settings.json
+  Sharing/                          Caption sharing between two computers
+    SharingController.cs              Modes, reconnecting, status messages
+    SharingHost.cs, PeerConnection.cs Encrypted connections (TLS with pinned certificates) and pairing
+    PairingSession.cs, PairingCode.cs 6-digit code comparison (commit/reveal, like Bluetooth)
+    CaptionFeed.cs                    Recent sentences and live text, sent in order without repeats
+    DiscoveryService.cs               Finding the other computer with UDP broadcasts
 src/LiveCaptionsUpgrade.App/      Windows app (WPF)
   LiveCaptionsReader.cs             Finds/launches Live Captions and reads its text via UI Automation
   CaptionService.cs                 Background polling loop
   OverlayWindow.xaml(.cs)           The caption bar, with scroll-back
   SettingsWindow.xaml(.cs)          Settings window
+  PairingWindow.xaml(.cs)           Pairing with the other computer
+  SharingSupport.cs                 Identity storage (DPAPI), firewall rule, log file
   GlobalHotkey.cs                   System-wide show/hide shortcut
   TrayIcon.cs                       Notification-area icon and options menu
 tests/LiveCaptionsUpgrade.Core.Tests/
 ```
 
-Run the tests with `dotnet test`. They also run on Linux and macOS.
+Run the tests with `dotnet test`. They also run on Linux and macOS; the caption sharing tests pair and
+connect real encrypted connections between simulated computers on the same machine.
 
 ## Limitations
 
-- **Windows 11 22H2+ only**, and only the languages Live Captions supports.
+- **Live Captions needs Windows 11 22H2+**, and only the languages it supports work. A Windows 10 computer can
+  only show captions shared from a Windows 11 one.
 - The app depends on Live Captions' internal window and element names (`LiveCaptionsDesktopWindow`,
   `CaptionsTextBlock`). A future Windows update could rename them; the constants are at the top of
   `LiveCaptionsReader.cs`.

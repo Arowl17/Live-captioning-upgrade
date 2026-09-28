@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
+using LiveCaptionsUpgrade.Core;
 
 namespace LiveCaptionsUpgrade;
 
@@ -15,6 +16,11 @@ internal sealed class TrayIcon : IDisposable
     private readonly ToolStripMenuItem _showCaptionsItem;
     private readonly ToolStripMenuItem _clickThroughItem;
     private readonly ToolStripMenuItem _showLiveCaptionsItem;
+    private readonly ToolStripMenuItem _sharingOffItem;
+    private readonly ToolStripMenuItem _sharingSendItem;
+    private readonly ToolStripMenuItem _sharingReceiveItem;
+    private readonly ToolStripMenuItem _sharingStatusItem;
+    private readonly ToolStripMenuItem _pairItem;
 
     public TrayIcon(App app)
     {
@@ -26,12 +32,26 @@ internal sealed class TrayIcon : IDisposable
         _clickThroughItem = new ToolStripMenuItem("Lock overlay (clicks pass through)", null, Later(app.ToggleClickThrough));
         _showLiveCaptionsItem = new ToolStripMenuItem("Show original Live Captions window", null, Later(app.ToggleLiveCaptionsWindow));
 
+        _sharingOffItem = new ToolStripMenuItem("Off", null, Later(() => app.SetCaptionSharing(CaptionSharingMode.Off)));
+        _sharingSendItem = new ToolStripMenuItem("Send captions to another computer", null, Later(() => app.SetCaptionSharing(CaptionSharingMode.Send)));
+        _sharingReceiveItem = new ToolStripMenuItem("Show captions from another computer", null, Later(() => app.SetCaptionSharing(CaptionSharingMode.Receive)));
+        _sharingStatusItem = new ToolStripMenuItem { Enabled = false };
+        _pairItem = new ToolStripMenuItem("Pair with a computer…", null, Later(app.OpenPairing));
+        var sharingMenu = new ToolStripMenuItem("Caption sharing");
+        sharingMenu.DropDownItems.Add(_sharingOffItem);
+        sharingMenu.DropDownItems.Add(_sharingSendItem);
+        sharingMenu.DropDownItems.Add(_sharingReceiveItem);
+        sharingMenu.DropDownItems.Add(new ToolStripSeparator());
+        sharingMenu.DropDownItems.Add(_sharingStatusItem);
+        sharingMenu.DropDownItems.Add(_pairItem);
+
         var menu = new ContextMenuStrip();
         menu.Items.Add(_copyItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_showCaptionsItem);
         menu.Items.Add(_clickThroughItem);
         menu.Items.Add(_showLiveCaptionsItem);
+        menu.Items.Add(sharingMenu);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Settings…", null, Later(app.OpenSettings));
         menu.Items.Add("Open transcripts folder", null, Later(app.OpenTranscriptsFolder));
@@ -39,7 +59,11 @@ internal sealed class TrayIcon : IDisposable
         menu.Items.Add("Exit", null, Later(app.ExitApp));
 
         // Copy copies the text selected in the caption bar, so it's only available when some is.
-        menu.Opening += (_, _) => _copyItem.Enabled = app.HasCaptionSelection;
+        menu.Opening += (_, _) =>
+        {
+            _copyItem.Enabled = app.HasCaptionSelection;
+            _sharingStatusItem.Text = app.SharingStatus;
+        };
 
         _icon = new NotifyIcon
         {
@@ -50,12 +74,24 @@ internal sealed class TrayIcon : IDisposable
         };
     }
 
-    public void Refresh(bool captionsVisible, string hotkey, bool clickThrough, bool liveCaptionsVisible)
+    public void Refresh(bool captionsVisible, string hotkey, bool clickThrough, bool liveCaptionsVisible, CaptionSharingMode sharing, string sharingStatus)
     {
         _showCaptionsItem.Checked = captionsVisible;
         _showCaptionsItem.ShortcutKeyDisplayString = hotkey.Length > 0 ? hotkey : null;
         _clickThroughItem.Checked = clickThrough;
-        _showLiveCaptionsItem.Checked = liveCaptionsVisible;
+        _showLiveCaptionsItem.Checked = liveCaptionsVisible && sharing != CaptionSharingMode.Receive;
+
+        // Captions shown from another computer don't involve Live Captions on this one.
+        _showLiveCaptionsItem.Enabled = sharing != CaptionSharingMode.Receive;
+        _sharingOffItem.Checked = sharing == CaptionSharingMode.Off;
+        _sharingSendItem.Checked = sharing == CaptionSharingMode.Send;
+        _sharingReceiveItem.Checked = sharing == CaptionSharingMode.Receive;
+        _sharingStatusItem.Text = sharingStatus;
+        _pairItem.Enabled = sharing != CaptionSharingMode.Off;
+
+        // Hovering the icon shows what's going on; tooltips are limited to 127 characters.
+        string tooltip = sharing == CaptionSharingMode.Off ? "Live Captions Upgrade" : "Live Captions Upgrade – " + sharingStatus;
+        _icon.Text = tooltip.Length > 127 ? tooltip[..126] + "…" : tooltip;
     }
 
     public void ShowMenuAtCursor() => _icon.ContextMenuStrip?.Show(Cursor.Position);

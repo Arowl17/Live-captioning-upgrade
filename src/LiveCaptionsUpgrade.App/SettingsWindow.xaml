@@ -37,7 +37,41 @@
         </Style>
     </Window.Resources>
 
-    <StackPanel Margin="14">
+    <!-- Scrolls when the window is taller than the screen (small laptop screens). -->
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Focusable="False">
+        <StackPanel>
+        <GroupBox Header="Caption sharing (two computers)">
+            <StackPanel>
+                <RadioButton x:Name="SharingOffRadio" GroupName="Sharing" Margin="0,3" Checked="OnSharingModeChecked">
+                    <TextBlock TextWrapping="Wrap" Text="Off" />
+                </RadioButton>
+                <RadioButton x:Name="SharingSendRadio" GroupName="Sharing" Margin="0,3" Checked="OnSharingModeChecked">
+                    <TextBlock TextWrapping="Wrap" Text="Send captions to another computer (this one runs Live Captions)" />
+                </RadioButton>
+                <RadioButton x:Name="SharingReceiveRadio" GroupName="Sharing" Margin="0,3" Checked="OnSharingModeChecked">
+                    <TextBlock TextWrapping="Wrap" Text="Show captions from another computer (for one without Live Captions, such as Windows 10)" />
+                </RadioButton>
+                <TextBlock x:Name="SharingStatusText" TextWrapping="Wrap" Margin="0,8,0,0" />
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <Button x:Name="PairButton" Content="Pair with a computer…" Padding="10,2" Click="OnPair" />
+                    <Button x:Name="ForgetButton" Content="Forget paired computer" Padding="10,2" Margin="6,0,0,0" Click="OnForget" />
+                </StackPanel>
+                <Border x:Name="FirewallBanner" Visibility="Collapsed" Background="#FFF4CE" BorderBrush="#E0C060"
+                        BorderThickness="1" Padding="8,6" Margin="0,8,0,0">
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Allow…" Padding="10,2" Margin="8,0,0,0" Click="OnAllowFirewall" />
+                        <TextBlock TextWrapping="Wrap" VerticalAlignment="Center"
+                                   Text="Windows Firewall may stop the other computer from connecting to this one." />
+                    </DockPanel>
+                </Border>
+            </StackPanel>
+        </GroupBox>
+
         <GroupBox Header="Caption appearance">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -123,7 +157,7 @@
             </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="Windows Live Captions">
+        <GroupBox x:Name="LiveCaptionsGroup" Header="Windows Live Captions">
             <StackPanel>
                 <CheckBox x:Name="HideLiveCaptionsBox" Content="Hide the original Live Captions window" />
                 <Grid Margin="0,4,0,0">
@@ -158,10 +192,13 @@
             </StackPanel>
         </GroupBox>
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
+        </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,0,0">
             <Button Content="OK" Width="80" IsDefault="True" Click="OnOk" />
             <Button Content="Cancel" Width="80" Margin="8,0,0,0" IsCancel="True" Click="OnCancel" />
             <Button Content="Apply" Width="80" Margin="8,0,0,0" Click="OnApply" />
         </StackPanel>
-    </StackPanel>
+    </Grid>
 </Window>

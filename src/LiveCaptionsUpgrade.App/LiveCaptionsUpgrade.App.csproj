@@ -16,6 +16,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- DPAPI: keeps this computer's pairing key encrypted for the Windows user. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LiveCaptionsUpgrade.Core\LiveCaptionsUpgrade.Core.csproj" />
   </ItemGroup>
 

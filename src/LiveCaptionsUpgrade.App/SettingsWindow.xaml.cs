@@ -2,12 +2,14 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using LiveCaptionsUpgrade.Core;
+using LiveCaptionsUpgrade.Core.Sharing;
 using WinForms = System.Windows.Forms;
 
 namespace LiveCaptionsUpgrade;
@@ -18,21 +20,30 @@ public partial class SettingsWindow : Window
     private const string DefaultHotkeyHint = "Click the box, then press the keys you want (for example Ctrl+Alt+H).";
 
     private readonly AppSettings _settings;
+    private readonly App _app;
+    private readonly SharingController _sharing;
     private readonly string _defaultTranscriptFolder = new AppSettings().ResolveTranscriptFolder();
     private string _textColor;
     private string _historyColor;
     private string _backgroundColor;
     private string _hotkey;
 
-    public SettingsWindow(AppSettings current)
+    internal SettingsWindow(AppSettings current, App app, SharingController sharing)
     {
         InitializeComponent();
+        _app = app;
+        _sharing = sharing;
         _settings = current.Clone();
         _textColor = _settings.TextColor;
         _historyColor = _settings.HistoryTextColor;
         _backgroundColor = _settings.BackgroundColor;
         _hotkey = _settings.ToggleHotkey;
         LoadValues();
+
+        // On a small screen, scroll rather than run off the bottom.
+        MaxHeight = SystemParameters.WorkArea.Height;
+        _sharing.StateChanged += OnSharingStateChanged;
+        Loaded += (_, _) => _ = RefreshAfterSwitchAsync();
     }
 
     /// <summary>Raised with the edited settings when OK or Apply is pressed.</summary>
@@ -43,12 +54,23 @@ public partial class SettingsWindow : Window
     {
         _settings.ClickThrough = current.ClickThrough;
         _settings.HideLiveCaptionsWindow = current.HideLiveCaptionsWindow;
+        _settings.CaptionSharing = current.CaptionSharing;
         ClickThroughBox.IsChecked = current.ClickThrough;
         HideLiveCaptionsBox.IsChecked = current.HideLiveCaptionsWindow;
+        SelectSharingMode(current.CaptionSharing);
+        _ = RefreshAfterSwitchAsync();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _sharing.StateChanged -= OnSharingStateChanged;
+        base.OnClosed(e);
     }
 
     private void LoadValues()
     {
+        SelectSharingMode(_settings.CaptionSharing);
+
         var fonts = Fonts.SystemFontFamilies
             .Select(f => f.Source)
             .Distinct()
@@ -81,6 +103,7 @@ public partial class SettingsWindow : Window
     private AppSettings Collect()
     {
         var result = _settings.Clone();
+        result.CaptionSharing = SelectedSharingMode();
         result.FontFamily = FontBox.SelectedItem as string ?? result.FontFamily;
         result.FontSize = Math.Round(FontSizeSlider.Value);
         result.TextColor = _textColor;
@@ -131,7 +154,24 @@ public partial class SettingsWindow : Window
         }
 
         Applied?.Invoke(settings);
+        _settings.CaptionSharing = settings.CaptionSharing;
+        RefreshSharingStatus();
+        _ = RefreshAfterSwitchAsync();
         return true;
+    }
+
+    private async Task RefreshAfterSwitchAsync()
+    {
+        try
+        {
+            await _app.WaitForSharingSwitchAsync();
+            RefreshSharingStatus();
+            await RefreshFirewallBannerAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Refreshing the sharing settings failed", ex);
+        }
     }
 
     private static bool CanUseFolder(string folder, out string problem)
@@ -153,6 +193,101 @@ public partial class SettingsWindow : Window
             problem = ex.Message;
             return false;
         }
+    }
+
+    private CaptionSharingMode SelectedSharingMode() =>
+        SharingSendRadio.IsChecked == true ? CaptionSharingMode.Send
+        : SharingReceiveRadio.IsChecked == true ? CaptionSharingMode.Receive
+        : CaptionSharingMode.Off;
+
+    private void SelectSharingMode(CaptionSharingMode mode)
+    {
+        SharingOffRadio.IsChecked = mode == CaptionSharingMode.Off;
+        SharingSendRadio.IsChecked = mode == CaptionSharingMode.Send;
+        SharingReceiveRadio.IsChecked = mode == CaptionSharingMode.Receive;
+        RefreshSharingStatus();
+    }
+
+    private void OnSharingModeChecked(object sender, RoutedEventArgs e) => RefreshSharingStatus();
+
+    private void OnSharingStateChanged() => Dispatcher.InvokeAsync(RefreshSharingStatus);
+
+    private void RefreshSharingStatus()
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        var selected = SelectedSharingMode();
+        var paired = _sharing.Paired;
+
+        // Hiding Live Captions doesn't apply when the captions come from the other computer.
+        LiveCaptionsGroup.IsEnabled = selected != CaptionSharingMode.Receive;
+        PairButton.IsEnabled = selected != CaptionSharingMode.Off;
+        ForgetButton.IsEnabled = paired is not null;
+        ForgetButton.Content = paired is null ? "Forget paired computer" : $"Forget {paired.Name}";
+        SharingStatusText.Text = selected != _sharing.Mode
+            ? "Click Apply or OK to switch."
+            : _sharing.Describe() + ".";
+    }
+
+    private void OnPair(object sender, RoutedEventArgs e)
+    {
+        // Pairing needs sharing turned on here, so apply the choice first.
+        if (SelectedSharingMode() != _sharing.Mode && !TryApply())
+        {
+            return;
+        }
+
+        _app.OpenPairing();
+    }
+
+    private async void OnForget(object sender, RoutedEventArgs e)
+    {
+        var paired = _sharing.Paired;
+        if (paired is null)
+        {
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Forget {paired.Name}? Captions stop being shared until you pair again.", Title,
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK)
+        {
+            try
+            {
+                await _sharing.ForgetAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Forgetting the paired computer failed", ex);
+            }
+        }
+    }
+
+    private async void OnAllowFirewall(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Task.Run(FirewallRule.Add);
+            await RefreshFirewallBannerAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Adding the firewall rule failed", ex);
+        }
+    }
+
+    private async Task RefreshFirewallBannerAsync()
+    {
+        if (_settings.CaptionSharing == CaptionSharingMode.Off)
+        {
+            FirewallBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        bool allowed = await Task.Run(FirewallRule.Exists);
+        FirewallBanner.Visibility = allowed ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // IsCancel only closes windows opened with ShowDialog; this one is modeless so the tray stays usable.

@@ -86,7 +86,8 @@ internal sealed class LiveCaptionsReader
             if (!File.Exists(ExecutablePath))
             {
                 throw new LiveCaptionsUnavailableException(
-                    "Windows Live Captions was not found. It requires Windows 11 version 22H2 or later.");
+                    "Windows Live Captions was not found. It requires Windows 11 version 22H2 or later. To show captions "
+                    + "from another computer instead, right-click here > Caption sharing > Show captions from another computer.");
             }
 
             // Don't start a second copy if one is already running, e.g. still on its first-run setup screen.

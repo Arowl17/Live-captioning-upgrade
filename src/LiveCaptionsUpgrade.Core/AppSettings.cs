@@ -13,6 +13,19 @@ public enum LiveCaptionsHideMethod
     Minimize,
 }
 
+/// <summary>Whether this computer shares captions with another one over the local network.</summary>
+public enum CaptionSharingMode
+{
+    /// <summary>Captions come from Live Captions on this computer and stay here.</summary>
+    Off,
+
+    /// <summary>Captions come from Live Captions on this computer and are also sent to the paired computer.</summary>
+    Send,
+
+    /// <summary>Captions come from the paired computer (for a computer without Live Captions, e.g. Windows 10).</summary>
+    Receive,
+}
+
 /// <summary>User settings, stored as JSON in %APPDATA%\LiveCaptionsUpgrade\settings.json.</summary>
 public sealed class AppSettings
 {
@@ -65,6 +78,9 @@ public sealed class AppSettings
 
     /// <summary>Global shortcut that hides and shows the overlay, e.g. "Ctrl+Alt+H". Empty disables it.</summary>
     public string ToggleHotkey { get; set; } = "Ctrl+Alt+H";
+
+    /// <summary>Send captions to, or show captions from, the paired computer.</summary>
+    public CaptionSharingMode CaptionSharing { get; set; } = CaptionSharingMode.Off;
 
     public double? WindowLeft { get; set; }
 
@@ -130,6 +146,7 @@ public sealed class AppSettings
         BackgroundColor = string.IsNullOrWhiteSpace(BackgroundColor) ? "#000000" : BackgroundColor;
         TranscriptFolder ??= string.Empty;
         HideMethod = Enum.IsDefined(HideMethod) ? HideMethod : LiveCaptionsHideMethod.Invisible;
+        CaptionSharing = Enum.IsDefined(CaptionSharing) ? CaptionSharing : CaptionSharingMode.Off;
         ToggleHotkey = Hotkey.TryParse(ToggleHotkey, out var hotkey) ? hotkey.ToString() : string.Empty;
     }
 
