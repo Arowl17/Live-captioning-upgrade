@@ -544,29 +544,39 @@ public sealed class CaptionTracker
     }
 
     /// <summary>
-    /// The digits in normalized text, spelled-out ones too ("three oh double 5" is "3055"), or null if it has number
-    /// words that aren't digits ("twenty", "hundred"), which can't be compared digit by digit.
+    /// The digits in normalized text, spelled-out ones too ("three oh double 5" is "3055", "fifty two eleven" is
+    /// "5211"), or null if it has number words that can't be compared digit by digit ("hundred", "thousand").
     /// </summary>
     private static string? DigitsOf(string text)
     {
         var digits = new System.Text.StringBuilder();
+        string[] words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         int repeat = 1;
-        foreach (string word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        for (int w = 0; w < words.Length; w++)
         {
-            int digit = Array.IndexOf(DigitNames, word);
-            if (word == "oh")
-            {
-                digit = 0;
-            }
-
+            string word = words[w];
+            int digit = word == "oh" ? 0 : Array.IndexOf(DigitNames, word);
+            int teen = Array.IndexOf(TeenNames, word);
+            int tens = Array.IndexOf(TensNames, word);
             if (digit >= 0)
             {
                 digits.Append((char)('0' + digit), repeat);
-                repeat = 1;
+            }
+            else if (teen >= 0)
+            {
+                digits.Append(10 + teen);
+            }
+            else if (tens >= 0)
+            {
+                // "sixty three" is 63, "sixty" alone 60.
+                int unit = w + 1 < words.Length ? Array.IndexOf(DigitNames, words[w + 1]) : -1;
+                digits.Append(tens + 2).Append(unit > 0 ? (char)('0' + unit) : '0');
+                w += unit > 0 ? 1 : 0;
             }
             else if (word is "double" or "triple")
             {
                 repeat = word == "double" ? 2 : 3;
+                continue;
             }
             else if (NumberWords.Contains(word))
             {
@@ -575,12 +585,17 @@ public sealed class CaptionTracker
             else
             {
                 digits.Append(word.Where(char.IsDigit).ToArray());
-                repeat = 1;
             }
+
+            repeat = 1;
         }
 
         return digits.ToString();
     }
+
+    private static readonly string[] TeenNames = { "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen" };
+
+    private static readonly string[] TensNames = { "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety" };
 
     private static readonly string[] DigitNames = { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
 

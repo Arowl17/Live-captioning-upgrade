@@ -320,6 +320,60 @@ public class CaptionTrackerTests
     }
 
     [Fact]
+    public void A_transfer_number_then_minutes_of_silence_then_the_next_call_repeats_nothing()
+    {
+        // As in a real transcript: the older version showed the number six times, then the whole earlier call again.
+        const string Before = "Yeah, hi. I'd like to order the. Grilled chicken Caesar salad.";
+        Feed(Before + " Zero.");
+        Feed(Before + " Zero.", advanceMs: 2000);
+        Feed(Before + " Zero. Four");
+        Feed(Before + " 04. Zero, two");
+        Feed(Before + " 040292.");
+        Feed(Before + " 040292.", advanceMs: 2000);
+        Feed(Before + " 040292.", advanceMs: 380_000);
+        Feed(Before + " 040292. Oh yeah");
+        Feed(Before + " 040292. Oh yeah, I'd like to order that");
+        Feed("I'd like to order the. Grilled chicken Caesar salad. 040292. Oh yeah, I'd like to order that large pizza.");
+        Feed("Grilled chicken Caesar salad. 040292. Oh yeah, I'd like to order that large pizza. A pickup.");
+
+        Assert.Equal(
+            new[] { "Yeah, hi.", "I'd like to order the.", "Grilled chicken Caesar salad.", "040292.", "Oh yeah, I'd like to order that large pizza." },
+            _emitted);
+    }
+
+    [Fact]
+    public void A_card_number_heard_partly_as_teens_is_shown_once()
+    {
+        // "Five. Two. Eleven." for "five two one one", then rewritten.
+        const string Before = "OK. The card number is";
+        Feed(Before + " 4000.");
+        Feed(Before + " 4000. Five.");
+        Feed(Before + " 4000. Five. Two.");
+        Feed(Before + " 4000. Five. Two. Eleven.");
+        Feed(Before + " 4000 5211.");
+        Feed(Before + " 4000 5211. Seven.");
+        Feed(Before + " 4000 5211. Seven, seven, three.");
+        Feed(Before + " 4000 5211 7730.");
+        Feed(Before + " 4000 5211 7730. Expiration date is");
+
+        Assert.Equal(new[] { "OK.", "The card number is 4000 5211 7730." }, _emitted);
+    }
+
+    [Fact]
+    public void A_number_read_as_pairs_replaces_its_early_part_when_rewritten()
+    {
+        // "Fifty two." had to go into the history (another number came straight after), then Live Captions
+        // rewrote both as one.
+        Feed("Is it this one? Fifty two.");
+        Feed("Is it this one? Fifty two.", advanceMs: 1500);
+        Feed("Is it this one? Fifty two. Yes");
+        Feed("Is it this one? 5211 7730. Yes.");
+        Feed("Is it this one? 5211 7730. Yes. OK");
+
+        Assert.Equal(new[] { "Is it this one?", "5211 7730.", "Yes." }, _emitted);
+    }
+
+    [Fact]
     public void The_same_short_number_said_again_is_shown_again()
     {
         Feed("The code is 12. 12. Yes");
