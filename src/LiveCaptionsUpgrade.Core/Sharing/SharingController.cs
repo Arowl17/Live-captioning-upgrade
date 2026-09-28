@@ -20,6 +20,10 @@ public sealed class SharingController : IAsyncDisposable
     private readonly CaptionFeed _feed = new();
     private readonly CaptionFeedReceiver _receiver = new();
     private readonly object _lock = new();
+
+    // Held while turning received messages into caption events, so they are raised in the order accepted,
+    // even for a moment when a new connection is replacing the old one.
+    private readonly object _receiveLock = new();
     private readonly SemaphoreSlim _modeLock = new(1, 1);
     private DeviceIdentity? _identity;
     private SharingHost? _host;
@@ -32,6 +36,7 @@ public sealed class SharingController : IAsyncDisposable
     private string? _peerStatus;
     private long _offlineSinceMs;
     private long _reachableSinceMs = -1;
+    private long _pairingChangedMs = long.MinValue / 2;
 
     /// <param name="pairing">Where the paired computer is remembered.</param>
     /// <param name="loadIdentity">Loads (or creates) this computer's certificate; called when sharing first starts.</param>
@@ -61,6 +66,12 @@ public sealed class SharingController : IAsyncDisposable
 
     /// <summary>Both computers try to connect; the one with the larger id waits this long so they rarely both succeed.</summary>
     public TimeSpan SecondaryDialDelay { get; init; } = TimeSpan.FromSeconds(6);
+
+    /// <summary>
+    /// Right after pairing, the other computer may not have saved the pairing yet and would say it isn't paired;
+    /// that isn't believed for this long.
+    /// </summary>
+    public TimeSpan NewPairingGrace { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>In show mode: new sentences from the other computer (already de-duplicated) and its live text.</summary>
     public event Action<IReadOnlyList<CaptionLine>, string>? CaptionsReceived;
@@ -261,6 +272,7 @@ public sealed class SharingController : IAsyncDisposable
         host.PeerConnected += OnPeerConnected;
         host.PeerDisconnected += OnPeerDisconnected;
         host.PairingRequested += OnPairingRequested;
+        host.PeerNoLongerPaired += OnPeerNoLongerPaired;
         host.Start();
         _host = host;
 
@@ -293,6 +305,7 @@ public sealed class SharingController : IAsyncDisposable
         if (host is not null)
         {
             host.PairingRequested -= OnPairingRequested;
+            host.PeerNoLongerPaired -= OnPeerNoLongerPaired;
             await host.DisposeAsync().ConfigureAwait(false);
             host.PeerConnected -= OnPeerConnected;
             host.PeerDisconnected -= OnPeerDisconnected;
@@ -408,7 +421,10 @@ public sealed class SharingController : IAsyncDisposable
         if (mode == CaptionSharingMode.Receive)
         {
             // What was being said is out of date now; the reconnect brings the finished sentences.
-            CaptionsReceived?.Invoke(Array.Empty<CaptionLine>(), string.Empty);
+            lock (_receiveLock)
+            {
+                CaptionsReceived?.Invoke(Array.Empty<CaptionLine>(), string.Empty);
+            }
         }
 
         RaiseStateChanged();
@@ -419,20 +435,20 @@ public sealed class SharingController : IAsyncDisposable
         switch (message)
         {
             case CaptionsMessage captions:
-                IReadOnlyList<CaptionLine> lines;
-                string pending;
-                lock (_lock)
+                lock (_receiveLock)
                 {
-                    if (_mode != CaptionSharingMode.Receive || link.PeerMode != CaptionSharingMode.Send || _peer != link)
+                    lock (_lock)
                     {
-                        return;
+                        if (_mode != CaptionSharingMode.Receive || link.PeerMode != CaptionSharingMode.Send || _peer != link)
+                        {
+                            return;
+                        }
                     }
 
-                    (lines, pending) = _receiver.Accept(captions, DateTimeOffset.Now);
+                    var (lines, pending) = _receiver.Accept(captions, DateTimeOffset.Now);
+                    CaptionsReceived?.Invoke(lines, pending);
                 }
 
-                // Raised outside the lock, but always from this connection's reader, so updates stay in order.
-                CaptionsReceived?.Invoke(lines, pending);
                 break;
 
             case SenderStatusMessage status:
@@ -470,8 +486,27 @@ public sealed class SharingController : IAsyncDisposable
             _ = peer.DisposeAsync().AsTask();
         }
 
-        _offlineSinceMs = PeerConnection.NowMs - (long)SecondaryDialDelay.TotalMilliseconds;
+        // Newly paired: the computer with the smaller id connects right away and the other waits its turn as
+        // usual, so they don't both connect at once (one of the two connections would be dropped again).
+        long now = PeerConnection.NowMs;
+        Volatile.Write(ref _pairingChangedMs, now);
+        _offlineSinceMs = now;
         RaiseStateChanged();
+    }
+
+    private void OnPeerNoLongerPaired(string peerId)
+    {
+        // Forgotten there while this computer was off, or it was paired with another computer since.
+        if (PeerConnection.NowMs - Volatile.Read(ref _pairingChangedMs) < (long)NewPairingGrace.TotalMilliseconds)
+        {
+            return;
+        }
+
+        if (_pairing.IsTrusted(peerId))
+        {
+            Log.Info("The paired computer is no longer paired with this one; forgetting it here too");
+            _pairing.Forget();
+        }
     }
 
     private void OnPairingRequested(PairingSession session) => PairingRequested?.Invoke(session);

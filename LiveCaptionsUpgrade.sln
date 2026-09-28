@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveCaptionsUpgrade.Core.Te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveCaptionsUpgrade.App", "src\LiveCaptionsUpgrade.App\LiveCaptionsUpgrade.App.csproj", "{5B41EAAC-319B-447D-9E2C-D54DA6EEFCC6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveCaptionsUpgrade.App.Tests", "tests\LiveCaptionsUpgrade.App.Tests\LiveCaptionsUpgrade.App.Tests.csproj", "{7454FCAC-DBF5-419F-ACE9-2DF09D459D82}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -34,10 +36,15 @@ Global
 		{5B41EAAC-319B-447D-9E2C-D54DA6EEFCC6}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5B41EAAC-319B-447D-9E2C-D54DA6EEFCC6}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5B41EAAC-319B-447D-9E2C-D54DA6EEFCC6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7454FCAC-DBF5-419F-ACE9-2DF09D459D82}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7454FCAC-DBF5-419F-ACE9-2DF09D459D82}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7454FCAC-DBF5-419F-ACE9-2DF09D459D82}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7454FCAC-DBF5-419F-ACE9-2DF09D459D82}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{67037AEF-B608-4E38-8E12-A0661CD698F9} = {D76D7737-A971-496F-959E-4E77656AA3A6}
 		{C7E3F7EA-91B3-4268-BFEB-403AF1F3AA03} = {0ED0AF26-273B-49C6-B674-84755C0520ED}
 		{5B41EAAC-319B-447D-9E2C-D54DA6EEFCC6} = {D76D7737-A971-496F-959E-4E77656AA3A6}
+		{7454FCAC-DBF5-419F-ACE9-2DF09D459D82} = {0ED0AF26-273B-49C6-B674-84755C0520ED}
 	EndGlobalSection
 EndGlobal

@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LiveCaptionsUpgrade.App.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LiveCaptionsUpgrade.Core\LiveCaptionsUpgrade.Core.csproj" />
   </ItemGroup>
 

@@ -78,7 +78,7 @@ dotnet run --project src/LiveCaptionsUpgrade.App
 To build a single `.exe` that runs without installing anything:
 
 ```powershell
-dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+dotnet publish src/LiveCaptionsUpgrade.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishReadyToRun=true -o publish
 ```
 
 The app starts Live Captions for you if it isn't already running, and hides it as soon as its captions
@@ -153,7 +153,9 @@ a problem on the PC, the laptop's caption bar says so.
 
 Only the paired computer can connect, both check each other's identity, and the captions are encrypted (TLS).
 Nothing leaves your network. The connection uses TCP port 47820, and computers find each other with UDP
-broadcasts on port 47821. **Forget** under **Settings → Caption sharing** unpairs both computers.
+broadcasts on port 47821. **Forget** under **Settings → Caption sharing** unpairs both computers (if the other one
+is off at the time, it finds out the next time it tries to connect). If the connection goes silent (Wi-Fi drops,
+a computer sleeps), both notice within about 10 seconds and reconnect when they can.
 
 ## Settings
 
@@ -207,10 +209,13 @@ src/LiveCaptionsUpgrade.App/      Windows app (WPF)
   GlobalHotkey.cs                   System-wide show/hide shortcut
   TrayIcon.cs                       Notification-area icon and options menu
 tests/LiveCaptionsUpgrade.Core.Tests/
+tests/LiveCaptionsUpgrade.App.Tests/   Opens every window (Windows only)
 ```
 
-Run the tests with `dotnet test`. They also run on Linux and macOS; the caption sharing tests pair and
-connect real encrypted connections between simulated computers on the same machine.
+Run the tests with `dotnet test tests/LiveCaptionsUpgrade.Core.Tests`. They also run on Linux and macOS; the
+caption sharing tests pair and connect real encrypted connections between simulated computers on the same
+machine, including a connection that goes silent and one that sends garbage.
+`tests/LiveCaptionsUpgrade.App.Tests` opens the app's windows and needs Windows.
 
 ## Limitations
 

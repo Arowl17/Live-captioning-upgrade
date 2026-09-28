@@ -128,8 +128,16 @@ public partial class OverlayWindow : Window
     /// <summary>Adds finished sentences (with when they were finished) and shows the sentence being spoken.</summary>
     public void ShowLines(IReadOnlyList<CaptionLine> lines, string pending)
     {
+        // Lines from another computer can be up to an hour old (it catches this one up after connecting): don't
+        // lay out ones that are already past the scroll-back limit only to delete them again.
+        var cutoff = DateTimeOffset.Now - TimeSpan.FromMinutes(_settings.ScrollbackMinutes);
         foreach (var line in lines)
         {
+            if (line.Time < cutoff)
+            {
+                continue;
+            }
+
             var paragraph = new Paragraph(new Run(line.Text)) { Margin = new Thickness(0), Foreground = _historyBrush };
             if (_liveShown)
             {

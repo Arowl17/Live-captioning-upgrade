@@ -72,6 +72,12 @@ public sealed class SharingHost : IAsyncDisposable
     /// <summary>Another computer wants to pair; show the code and call Confirm or Reject.</summary>
     public event Action<PairingSession>? PairingRequested;
 
+    /// <summary>
+    /// The paired computer answered a connection attempt by saying it isn't paired with this one (it was
+    /// forgotten or paired with another computer there). Raised with the paired computer's id.
+    /// </summary>
+    public event Action<string>? PeerNoLongerPaired;
+
     public IReadOnlyCollection<PeerConnection> Links => _links.Values.ToList();
 
     public PeerConnection? GetLink(string peerId) => _links.TryGetValue(peerId, out var link) ? link : null;
@@ -184,9 +190,17 @@ public sealed class SharingHost : IAsyncDisposable
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
             cts.CancelAfter(HandshakeTimeout);
             await connection.SendAsync(Hello(ConnectPurpose.Session), cts.Token).ConfigureAwait(false);
-            if (await connection.ReceiveControlAsync(cts.Token).ConfigureAwait(false) is not HelloMessage { Purpose: ConnectPurpose.Session } hello)
+            var reply = await connection.ReceiveControlAsync(cts.Token).ConfigureAwait(false);
+            if (reply is not HelloMessage { Purpose: ConnectPurpose.Session } hello)
             {
                 await connection.DisposeAsync().ConfigureAwait(false);
+                if (reply is UnpairMessage)
+                {
+                    // Its identity was checked above, so this really is the paired computer saying so.
+                    Log.Info($"{DeviceIdentity.ShortFingerprint(peerId)} at {endPoint} is no longer paired with this computer");
+                    PeerNoLongerPaired?.Invoke(peerId);
+                }
+
                 return false;
             }
 
@@ -227,7 +241,8 @@ public sealed class SharingHost : IAsyncDisposable
                 continue;
             }
 
-            _ = Task.Run(() => HandleIncomingAsync(client, token), token);
+            // Not cancellable: the handler must run to dispose the client, even when shutting down.
+            _ = Task.Run(() => HandleIncomingAsync(client, token));
         }
     }
 
@@ -293,8 +308,14 @@ public sealed class SharingHost : IAsyncDisposable
 
                     break;
 
+                case ConnectPurpose.Session:
+                    // A computer that still thinks it's paired with this one: tell it, so it stops waiting for us.
+                    Log.Info($"Refused connection from {connection.RemoteEndPoint.Address}: not paired with it");
+                    await connection.SendAsync(new UnpairMessage(), cts.Token).ConfigureAwait(false);
+                    break;
+
                 default:
-                    Log.Info($"Rejected connection from {connection.RemoteEndPoint.Address} (not paired)");
+                    Log.Info($"Refused pairing request from {connection.RemoteEndPoint.Address}");
                     break;
             }
         }
@@ -390,8 +411,13 @@ public sealed class SharingHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
         _listener.Stop();
+
+        // Let the last messages go out (e.g. the sentence that was being spoken when the app was closed).
+        await Task.WhenAll(_links.Values.Select(l => l.CloseGracefullyAsync(TimeSpan.FromMilliseconds(500)))).ConfigureAwait(false);
+
+        // Also ends any connection that came up in the meantime.
+        _cts.Cancel();
         foreach (var link in _links.Values)
         {
             await link.DisposeAsync().ConfigureAwait(false);

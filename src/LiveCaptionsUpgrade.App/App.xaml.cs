@@ -30,6 +30,15 @@ public partial class App : Application
     private readonly SemaphoreSlim _sharingSwitchLock = new(1, 1);
     private Task _sharingSwitch = Task.CompletedTask;
     private CaptionSharingMode _activeSharing = CaptionSharingMode.Off;
+
+    // Live Captions' latest problem message, shown unless the captions come from the other computer.
+    private string? _liveCaptionsStatus;
+
+    // Captions from the other computer waiting to be shown; several network messages are shown in one go.
+    private readonly object _receivedLock = new();
+    private List<CaptionLine> _receivedLines = new();
+    private string _receivedPending = string.Empty;
+    private bool _receivedScheduled;
     private bool _cleanedUp;
 
     private static string AppVersion { get; } =
@@ -312,12 +321,9 @@ public partial class App : Application
                 var service = _service;
                 _service = null;
                 await service.StopAsync();
-                _overlay.ShowStatus(null);
             }
             else if (target != CaptionSharingMode.Receive && _service is null && !_cleanedUp)
             {
-                // Any "waiting for the other computer" message no longer applies.
-                _overlay.ShowStatus(null);
                 StartLiveCaptions();
             }
 
@@ -361,6 +367,7 @@ public partial class App : Application
 
     private void StartLiveCaptions()
     {
+        _liveCaptionsStatus = null;
         var service = new CaptionService(_settings, _transcript!);
         service.CaptionsUpdated += update =>
         {
@@ -371,7 +378,14 @@ public partial class App : Application
         service.StatusChanged += status =>
         {
             _sharing?.SetSenderStatus(status);
-            Dispatcher.InvokeAsync(() => _overlay?.ShowStatus(status));
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (_service == service)
+                {
+                    _liveCaptionsStatus = status;
+                    RefreshOverlayStatus();
+                }
+            });
         };
         service.Notice += message => Dispatcher.InvokeAsync(() => _tray?.ShowNotice(message));
         _service = service;
@@ -397,27 +411,57 @@ public partial class App : Application
         }
     }
 
-    /// <summary>Captions from the paired computer (network thread).</summary>
+    /// <summary>Captions from the paired computer (network thread, in order).</summary>
     private void OnCaptionsReceived(IReadOnlyList<CaptionLine> lines, string pending)
     {
         _transcript?.Write(lines);
-        Dispatcher.InvokeAsync(() =>
+
+        // Messages can arrive faster than a slow computer redraws: collect them and show them in one go.
+        lock (_receivedLock)
         {
-            if (_activeSharing == CaptionSharingMode.Receive || _sharing?.Mode == CaptionSharingMode.Receive)
+            _receivedLines.AddRange(lines);
+            _receivedPending = pending;
+            if (_receivedScheduled)
             {
-                _overlay?.ShowLines(lines, pending);
+                return;
             }
-        });
+
+            _receivedScheduled = true;
+        }
+
+        Dispatcher.InvokeAsync(ShowReceivedCaptions);
+    }
+
+    private void ShowReceivedCaptions()
+    {
+        List<CaptionLine> lines;
+        string pending;
+        lock (_receivedLock)
+        {
+            lines = _receivedLines;
+            pending = _receivedPending;
+            _receivedLines = new List<CaptionLine>();
+            _receivedScheduled = false;
+        }
+
+        if (_activeSharing == CaptionSharingMode.Receive || _sharing?.Mode == CaptionSharingMode.Receive)
+        {
+            _overlay?.ShowLines(lines, pending);
+        }
     }
 
     private void OnSharingStateChanged()
     {
-        if (_sharing?.Mode == CaptionSharingMode.Receive)
-        {
-            _overlay?.ShowStatus(_sharing.DescribeProblemForReceiver());
-        }
-
+        RefreshOverlayStatus();
         RefreshTray();
+    }
+
+    /// <summary>The problem line under the captions, from whichever source the captions come from now.</summary>
+    private void RefreshOverlayStatus()
+    {
+        _overlay?.ShowStatus(_activeSharing == CaptionSharingMode.Receive
+            ? _sharing?.DescribeProblemForReceiver()
+            : _liveCaptionsStatus);
     }
 
     private void OnPairingRequested(PairingSession session)

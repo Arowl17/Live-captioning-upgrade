@@ -227,9 +227,10 @@ public partial class SettingsWindow : Window
         PairButton.IsEnabled = selected != CaptionSharingMode.Off;
         ForgetButton.IsEnabled = paired is not null;
         ForgetButton.Content = paired is null ? "Forget paired computer" : $"Forget {paired.Name}";
+        string state = _sharing.Describe();
         SharingStatusText.Text = selected != _sharing.Mode
             ? "Click Apply or OK to switch."
-            : _sharing.Describe() + ".";
+            : char.IsLetterOrDigit(state[^1]) ? state + "." : state;
     }
 
     private void OnPair(object sender, RoutedEventArgs e)

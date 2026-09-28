@@ -38,7 +38,7 @@ internal sealed class TestSharingComputer : IAsyncDisposable
     }
 
     /// <summary>Quits and starts the app again (same identity and pairing, fresh memory).</summary>
-    public async Task RestartAsync(CaptionSharingMode mode)
+    public async Task RestartAsync(CaptionSharingMode mode, TimeSpan? newPairingGrace = null)
     {
         await Controller.DisposeAsync();
         lock (_lock)
@@ -47,18 +47,19 @@ internal sealed class TestSharingComputer : IAsyncDisposable
             _pending = string.Empty;
         }
 
-        Controller = Create();
+        Controller = Create(newPairingGrace);
         await Controller.SetModeAsync(mode);
     }
 
     public async ValueTask DisposeAsync() => await Controller.DisposeAsync();
 
-    private SharingController Create()
+    private SharingController Create(TimeSpan? newPairingGrace = null)
     {
         var controller = new SharingController(new PairingStore(PairingPath), () => DeviceIdentity.FromPkcs12(_identity), Name, "test", tcpPort: 0, discoveryPort: 0)
         {
             DialInterval = TimeSpan.FromMilliseconds(200),
             SecondaryDialDelay = TimeSpan.FromMilliseconds(600),
+            NewPairingGrace = newPairingGrace ?? TimeSpan.FromSeconds(30),
         };
         controller.CaptionsReceived += (lines, pending) =>
         {

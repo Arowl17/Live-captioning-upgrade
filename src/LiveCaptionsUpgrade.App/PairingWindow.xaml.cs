@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -160,6 +161,10 @@ public partial class PairingWindow : Window
             {
                 InvalidOperationException when !_sharing.IsRunning => "Caption sharing is off on this computer. Turn it on first (Send or Show).",
                 InvalidOperationException => "Another pairing is still in progress. Finish or cancel it first.",
+
+                // It answered but didn't go ahead: declined recently, or busy pairing with another computer.
+                InvalidDataException => $"{name} didn't accept the pairing request. If a pairing was just cancelled there, "
+                    + "wait a minute and try again.",
                 _ => $"Couldn't reach {name}.\n\nMake sure Live Captions Upgrade is open there with caption sharing turned on (Send or Show), "
                     + "that both computers are on the same network, and that Windows Firewall on it allows Live Captions Upgrade.",
             };

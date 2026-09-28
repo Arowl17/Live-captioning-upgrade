@@ -19,6 +19,7 @@ public sealed class PeerConnection : IAsyncDisposable
     private readonly FramedConnection _connection;
     private readonly Channel<ControlMessage> _outgoing = Channel.CreateUnbounded<ControlMessage>(new UnboundedChannelOptions { SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
+    private Task _writer = Task.CompletedTask;
     private long _lastReceiveMs;
     private int _closed;
 
@@ -67,11 +68,11 @@ public sealed class PeerConnection : IAsyncDisposable
         var token = linked.Token;
         try
         {
-            var writer = WriteLoopAsync(token);
+            _writer = WriteLoopAsync(token);
             var heartbeat = HeartbeatLoopAsync(token);
             await ReadLoopAsync(token).ConfigureAwait(false);
             linked.Cancel();
-            await Task.WhenAll(writer, heartbeat).ConfigureAwait(false);
+            await Task.WhenAll(_writer, heartbeat).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -186,6 +187,17 @@ public sealed class PeerConnection : IAsyncDisposable
         {
             Log.Error("Handling a disconnect failed", e);
         }
+    }
+
+    /// <summary>Sends what's still queued (waiting at most <paramref name="timeout"/>), then closes.</summary>
+    public async Task CloseGracefullyAsync(TimeSpan timeout)
+    {
+        if (_outgoing.Writer.TryComplete())
+        {
+            await Task.WhenAny(_writer, Task.Delay(timeout)).ConfigureAwait(false);
+        }
+
+        await CloseAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
