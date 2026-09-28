@@ -228,6 +228,87 @@ public class CaptionTrackerTests
     }
 
     [Fact]
+    public void A_sentence_rewritten_after_it_was_saved_does_not_make_the_next_one_repeat()
+    {
+        // Live Captions closes "Riverside, Texas seven." for a moment, then rewrites it once the zip code is complete.
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside, Texas seven.");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside, Texas seven. Five");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the main. Pick");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the main. Pick up");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the main. Pick up building");
+        Feed("Delivery. Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the main. Pick up building, the main building.");
+        Feed("Uh, 4100 Maple Grove, uh. Riverside TX 75231 in the main. Pick up building, the main building. Zero");
+
+        Assert.Equal(
+            new[]
+            {
+                "Delivery.",
+                "Uh, 4100 Maple Grove, uh.",
+                "Riverside, Texas seven.",
+                "Riverside TX 75231 in the main.",
+                "Pick up building, the main building.",
+            },
+            _emitted);
+    }
+
+    [Fact]
+    public void Several_rewritten_sentences_in_a_row_still_do_not_cause_repeats()
+    {
+        Feed("Card number is. Four. One. One");
+        Feed("Card number is 4111 1111 1111 1111. Expiry");
+        Feed("Card number is 4111 1111 1111 1111. Expiry is 0327. And");
+        Feed("Card number is 4111 1111 1111 1111. Expiry is 0327. And the code");
+        Feed("Card number is 4111 1111 1111 1111. Expiry is 0327. And the code is 123. OK");
+
+        Assert.Single(_emitted, "Card number is 4111 1111 1111 1111.");
+        Assert.Single(_emitted, "Expiry is 0327.");
+        Assert.Single(_emitted, "And the code is 123.");
+    }
+
+    [Fact]
+    public void A_short_rewritten_sentence_does_not_repeat_either()
+    {
+        Feed("What is the apartment number? Seven.");
+        Feed("What is the apartment number? Seven. Five");
+        Feed("What is the apartment number? 75.");
+        Feed("What is the apartment number? 75. And");
+        Feed("What is the apartment number? 75. And the gate");
+        Feed("What is the apartment number? 75. And the gate code is 1234. OK");
+
+        Assert.Equal(new[] { "What is the apartment number?", "Seven.", "75.", "And the gate code is 1234." }, _emitted);
+    }
+
+    [Fact]
+    public void A_new_sentence_starting_like_the_last_one_is_not_swallowed()
+    {
+        Feed("Is that right? Yes.");
+        Feed("Is that right? Yes. Five");
+        Feed("Is that right? 5.");
+        Feed("Is that right? 5. Yes");
+        Feed("Is that right? 5. Yes please do it. OK");
+
+        Assert.Equal(new[] { "Is that right?", "Yes.", "5.", "Yes please do it." }, _emitted);
+    }
+
+    [Fact]
+    public void A_shorter_repeat_of_part_of_a_sentence_is_still_shown()
+    {
+        Feed("The address is 4100 Maple Grove. 4100");
+        Feed("The address is 4100 Maple Grove. 4100 Maple Grove. Yes");
+
+        Assert.Equal(new[] { "The address is 4100 Maple Grove.", "4100 Maple Grove." }, _emitted);
+    }
+
+    [Fact]
+    public void A_short_answer_given_again_is_shown_again()
+    {
+        Feed("Is it 4100? Yes. Maple Grove? Yes. OK");
+
+        Assert.Equal(new[] { "Is it 4100?", "Yes.", "Maple Grove?", "Yes." }, _emitted);
+    }
+
+    [Fact]
     public void Reset_forgets_committed_sentences()
     {
         Feed("Same words. Next");

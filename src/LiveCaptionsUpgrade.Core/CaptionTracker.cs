@@ -27,8 +27,9 @@ public sealed class CaptionTracker
 {
     private const int MaxRemembered = 64;
 
-    // How many recently committed sentences to look for when locating where we left off.
-    private const int AnchorDepth = 8;
+    // How many recently committed sentences to look for when locating where we left off. Generous, because
+    // Live Captions may end a long sentence (an address, a card number) too early several times over.
+    private const int AnchorDepth = 16;
 
     // Words from the start of the visible text used to find where it continues the unfinished sentence.
     // With this many words, one of them may differ (Live Captions corrected it as the line scrolled away).
@@ -48,6 +49,16 @@ public sealed class CaptionTracker
     // Longest run of already-emitted words looked for at the start of the text when nothing else matches.
     private const int MaxOverlapWords = 80;
 
+    // Emitted sentences that Live Captions may have rewritten since, so they no longer appear as such
+    // ("Riverside, Texas seven." becoming part of "Riverside TX 75231 in the main.").
+    private const int MaxRewrittenSentences = 8;
+
+    // Fewest words for the top line to be recognised as the end of an emitted sentence despite a rewritten word.
+    private const int MinFuzzyTailWords = 5;
+
+    // A distinctive sentence identical to one of this many just emitted is not emitted again.
+    private const int RepeatWindow = 3;
+
     private readonly TimeSpan _idleFinalizeDelay;
     private readonly double _similarityThreshold;
     private readonly List<(string Text, string Normalized)> _committed = new();
@@ -56,6 +67,9 @@ public sealed class CaptionTracker
     private DateTimeOffset _lastChange = DateTimeOffset.MinValue;
     private bool _idleHandled;
     private string _pending = string.Empty;
+
+    // The top line starts mid-sentence (lowercase), i.e. the start of its sentence has scrolled away.
+    private bool _topIsCutOff;
 
     public CaptionTracker(TimeSpan idleFinalizeDelay, double similarityThreshold = 0.8)
     {
@@ -162,10 +176,13 @@ public sealed class CaptionTracker
         finalCount = Math.Max(finalCount, 0);
 
         var added = new List<string>();
+        int committedBefore = _committed.Count;
         for (int i = anchor + 1; i < finalCount; i++)
         {
-            // A segment made only of punctuation (e.g. a stray "…") is not worth emitting.
-            if (normalized[i].Length == 0)
+            // A segment made only of punctuation (e.g. a stray "…") is not worth emitting. Nor is a distinctive
+            // sentence identical to one just emitted: saying the very same thing again adds nothing, and it guards
+            // against a repeated line if Live Captions ever rewrites its text in some way not handled above.
+            if (normalized[i].Length == 0 || IsRecentRepeat(normalized[i], committedBefore))
             {
                 continue;
             }
@@ -207,7 +224,54 @@ public sealed class CaptionTracker
         if (visible.Count > 0)
         {
             DropWords(texts, normalized, firstSegment, visible[^1]);
+            return;
         }
+
+        // Some of them may have been rewritten since, so they aren't visible as such any more: "Riverside, Texas seven."
+        // became "Riverside TX 75231 in the main." (emitted after it), or the last one emitted was early and is now part
+        // of the sentence being spoken. Skip the longest run of them that the text starts with, word for word and
+        // ending where a finished sentence ends.
+        for (int first = firstMerged; first < _committed.Count; first++)
+        {
+            for (int last = _committed.Count - 1; last >= first; last--)
+            {
+                var emitted = CommittedWords(first, last);
+                var shown = VisibleWords(texts, firstSegment, emitted.Count);
+                if (shown.Count == emitted.Count && EndsFinishedSentence(texts, shown[^1])
+                    && shown.Select(word => word.Key).Zip(emitted).All(pair => pair.First == pair.Second || IsSameWord(pair.First, pair.Second)))
+                {
+                    DropWords(texts, normalized, firstSegment, shown[^1]);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>The words of committed sentences <paramref name="first"/> to <paramref name="last"/>.</summary>
+    private List<string> CommittedWords(int first, int last)
+    {
+        var words = new List<string>();
+        for (int k = first; k <= last; k++)
+        {
+            words.AddRange(_committed[k].Normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        return words;
+    }
+
+    /// <summary>True if the word ends its sentence, and that sentence is finished (not the one still being spoken).</summary>
+    private static bool EndsFinishedSentence(string[] texts, (int Segment, int Token, string Key) word)
+    {
+        string[] tokens = texts[word.Segment].Split(' ');
+        for (int t = tokens.Length - 1; t > word.Token; t--)
+        {
+            if (TextSimilarity.Normalize(tokens[t]).Length > 0)
+            {
+                return false;
+            }
+        }
+
+        return SentenceSplitter.Split(texts[word.Segment]) is [{ IsTerminated: true }];
     }
 
     /// <summary>How many words from <paramref name="firstSegment"/> on are the sentences emitted from <paramref name="firstMerged"/> on.</summary>
@@ -537,6 +601,7 @@ public sealed class CaptionTracker
             return (-1, -1);
         }
 
+        _topIsCutOff = char.IsLower(segments[0].Text.TrimStart('"', '\'', '(', '“', '‘').FirstOrDefault());
         int oldest = Math.Max(0, _committed.Count - AnchorDepth);
 
         // First pass: the sentence before it must match too, so a repeated sentence ("Yes.") isn't mistaken
@@ -553,9 +618,27 @@ public sealed class CaptionTracker
 
                 for (int merged = 1; merged <= MaxMergedSentences && k - merged >= 0; merged++)
                 {
-                    if (MatchesText(normalized[i], Merged(k, merged), i) && Matches(normalized[i - 1], k - merged, i - 1))
+                    if (!MatchesText(normalized[i], Merged(k, merged), i))
+                    {
+                        continue;
+                    }
+
+                    if (MatchesBefore(normalized[i - 1], k - merged, i - 1))
                     {
                         return (i, k);
+                    }
+
+                    // The sentences emitted between the two may have been rewritten since, so they're no longer
+                    // visible as such. Only for a distinctive sentence, which can't match here by coincidence.
+                    if (normalized[i].Length >= MinDistinctiveLength)
+                    {
+                        for (int rewritten = 1; rewritten <= MaxRewrittenSentences && k - merged - rewritten >= 0; rewritten++)
+                        {
+                            if (MatchesBefore(normalized[i - 1], k - merged - rewritten, i - 1))
+                            {
+                                return (i, k);
+                            }
+                        }
                     }
                 }
             }
@@ -603,6 +686,29 @@ public sealed class CaptionTracker
         }
 
         return (-1, -1);
+    }
+
+    /// <summary>
+    /// The segment before a candidate anchor matches committed sentence k, alone or merged with the ones before it
+    /// (Live Captions may have joined them since: "Something while customer five." + "account really." became
+    /// "Something while customer never account really.").
+    /// </summary>
+    private bool MatchesBefore(string candidate, int k, int segmentIndex)
+    {
+        if (Matches(candidate, k, segmentIndex))
+        {
+            return true;
+        }
+
+        for (int merged = 2; merged <= MaxMergedSentences && k - merged + 1 >= 0; merged++)
+        {
+            if (MatchesText(candidate, Merged(k, merged), segmentIndex))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The oldest visible segment matches committed sentence k, alone or merged with the ones before it.</summary>
@@ -662,11 +768,24 @@ public sealed class CaptionTracker
 
         // The first visible segment may be the tail of a sentence whose start scrolled off the top. The oldest
         // visible text has always been seen and committed on an earlier poll, so even a short tail counts.
-        return segmentIndex == 0
-            && candidate.Length > 0
-            && committed.Length > candidate.Length
-            && committed[committed.Length - candidate.Length - 1] == ' '
-            && committed.EndsWith(candidate, StringComparison.Ordinal);
+        if (segmentIndex != 0 || candidate.Length == 0 || committed.Length <= candidate.Length)
+        {
+            return false;
+        }
+
+        if (committed[committed.Length - candidate.Length - 1] == ' ' && committed.EndsWith(candidate, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Or the tail with a word or two rewritten since it was emitted ("... before seven through ... zero address
+        // after card" is now "before phone through ... problem address after card"), if long enough to be sure and
+        // visibly cut off (a whole sentence at the top that merely ends like an earlier one isn't its tail).
+        string[] tail = candidate.Split(' ');
+        string[] all = committed.Split(' ');
+        return _topIsCutOff && tail.Length >= MinFuzzyTailWords && all.Length > tail.Length
+            && WordsMatch(all, all.Length - tail.Length, tail, 0, tail.Length)
+            && SameNumbers(candidate, string.Join(" ", all, all.Length - tail.Length, tail.Length));
     }
 
     private static bool SimilarWordCount(string a, string b)
@@ -711,6 +830,26 @@ public sealed class CaptionTracker
                 return false;
             }
         }
+    }
+
+    /// <summary>True for a distinctive sentence identical to one emitted just before this text.</summary>
+    private bool IsRecentRepeat(string normalized, int committedBefore)
+    {
+        if (normalized.Length < MinDistinctiveLength)
+        {
+            return false;
+        }
+
+        // Only what was emitted before this text: two identical sentences arriving together were both said.
+        for (int k = Math.Max(0, committedBefore - RepeatWindow); k < committedBefore; k++)
+        {
+            if (string.Equals(_committed[k].Normalized, normalized, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void Remember(string text, string normalized)

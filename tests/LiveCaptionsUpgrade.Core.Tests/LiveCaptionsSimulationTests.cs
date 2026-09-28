@@ -90,6 +90,39 @@ public class LiveCaptionsSimulationTests
         Assert.Equal(script, emitted);
     }
 
+    [Theory]
+    [MemberData(nameof(Seeds))]
+    public void Sentences_rewritten_after_closing_early_are_never_repeated(int seed)
+    {
+        // Reading out an address or a number, Live Captions often ends the sentence too soon ("Riverside, Texas
+        // seven."), then rewrites it once it has heard more ("Riverside TX 75231 in the main."). The early version
+        // has already been shown by then, which is fine; but the rewritten one must appear once, not over and over.
+        var random = new Random(seed);
+        var script = Enumerable.Range(0, 40)
+            .Select(i => i % 4 == 0 ? RandomSentence(random, 6, 18) : RandomSentence(random, 1, 8))
+            .ToList();
+        var options = new SimulationOptions { RewriteChance = 0.35 };
+
+        var (emitted, _) = Simulate(script, random, options);
+
+        // No sentence is shown more often than it was said or shown early. (Also shown: the rest of a sentence whose
+        // start was shown early, once.)
+        foreach (var shownSentence in emitted.GroupBy(sentence => sentence))
+        {
+            int saidTimes = script.Concat(options.EarlyVersions).Count(sentence => sentence == shownSentence.Key);
+            Assert.True(shownSentence.Count() <= Math.Max(saidTimes, 1),
+                $"\"{shownSentence.Key}\" was shown {shownSentence.Count()} times\nSHOWN: " + string.Join(" | ", emitted));
+        }
+
+        // Nothing said is lost apart from the word that was misheard in each early version, and nothing extra is
+        // shown apart from the early versions themselves.
+        string[] said = Words(script);
+        string[] shown = Words(emitted);
+        int common = CommonSubsequenceLength(said, shown);
+        Assert.True(said.Length - common <= options.Rewrites, $"Lost {said.Length - common} words in {options.Rewrites} rewrites");
+        Assert.True(shown.Length - common <= options.EarlyWords, $"{shown.Length - common} extra words, early versions had {options.EarlyWords}");
+    }
+
     [Fact]
     public void Sentences_that_differ_only_in_numbers_are_all_kept()
     {
@@ -191,6 +224,30 @@ public class LiveCaptionsSimulationTests
                 else
                 {
                     words.Add(bare);
+                }
+
+                if (w + 2 < sentenceWords.Length && random.NextDouble() < options.RewriteChance)
+                {
+                    // Live Captions ends the sentence too soon, the last word misheard as a number...
+                    string heard = words[^1];
+                    string misheard = NumberWords[random.Next(NumberWords.Length)];
+                    words[^1] = (w == 0 ? char.ToUpperInvariant(misheard[0]) + misheard[1..] : misheard) + ".";
+                    options.EarlyVersions.Add(string.Join(" ", words.Skip(sentenceStart)));
+                    Show(random.NextDouble() < 0.5 ? 1500 : 150);
+                    options.Rewrites++;
+                    options.EarlyWords += w + 1;
+
+                    // ...the next word looks like the start of a new sentence...
+                    string next = sentenceWords[w + 1];
+                    words.Add(char.ToUpperInvariant(next[0]) + next[1..]);
+                    Show();
+
+                    // ...then it rewrites the whole thing as one sentence.
+                    words[^2] = heard;
+                    words[^1] = next;
+                    Show();
+                    w++;
+                    continue;
                 }
 
                 if (w == 0 && sentenceStart > 0 && random.NextDouble() < options.MergeChance)
@@ -299,6 +356,35 @@ public class LiveCaptionsSimulationTests
         public double TerminatorChangeChance { get; init; }
 
         public double BlankChance { get; init; }
+
+        public double RewriteChance { get; init; }
+
+        /// <summary>Counted while simulating: sentences ended too soon and rewritten, and the words of their early versions.</summary>
+        public int Rewrites { get; set; }
+
+        public int EarlyWords { get; set; }
+
+        public List<string> EarlyVersions { get; } = new();
+    }
+
+    private static readonly string[] NumberWords = { "seven", "five", "two", "three", "nine", "zero" };
+
+    /// <summary>Length of the longest sequence of words appearing in both, in the same order.</summary>
+    private static int CommonSubsequenceLength(string[] a, string[] b)
+    {
+        var previous = new int[b.Length + 1];
+        var current = new int[b.Length + 1];
+        for (int i = 1; i <= a.Length; i++)
+        {
+            for (int j = 1; j <= b.Length; j++)
+            {
+                current[j] = a[i - 1] == b[j - 1] ? previous[j - 1] + 1 : Math.Max(previous[j], current[j - 1]);
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[b.Length];
     }
 
     private static string RandomSentence(Random random, int minWords, int maxWords)
