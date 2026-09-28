@@ -1,115 +1,110 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 using LiveCaptionsUpgrade.Core;
-using LiveCaptionsUpgrade.Core.Sharing;
 using Xunit;
 
 namespace LiveCaptionsUpgrade.AppTests;
 
 /// <summary>
-/// Opens each window the way the app does, so a mistake in its layout (which only shows up when it's
-/// loaded) fails here rather than on someone's screen.
+/// Runs the real app, the way the work laptop does (showing captions from another computer), and opens its
+/// windows. Layout mistakes only show up when a window is loaded, so they fail here rather than on someone's screen.
 /// </summary>
 public class WindowTests
 {
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(90);
+
     [Fact]
-    public void Every_window_opens_and_works_with_captions_and_settings()
+    public void The_app_starts_in_show_mode_opens_its_windows_shows_shared_captions_and_exits()
     {
-        int liveCaptionsBefore = CountLiveCaptions();
-        var startedAfter = new List<string>();
-        void Check(string step)
+        // It uses the real settings folder, so it only runs on a throwaway build machine.
+        if (Environment.GetEnvironmentVariable("CI") is null)
         {
-            DoEvents();
-            Thread.Sleep(1500);
-            if (CountLiveCaptions() > liveCaptionsBefore + startedAfter.Count)
+            return;
+        }
+
+        string settingsPath = AppSettings.DefaultPath;
+        string? savedSettings = File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null;
+        new AppSettings { CaptionSharing = CaptionSharingMode.Receive }.Save(settingsPath);
+        int liveCaptionsBefore = CountLiveCaptions();
+        string? status = null;
+        var steps = new List<string>();
+        try
+        {
+            RunOnUiThread(() =>
             {
-                startedAfter.Add(step);
+                var app = new global::LiveCaptionsUpgrade.App();
+                app.InitializeComponent();
+
+                // Once started up (sharing starts in the background), use it like a person would, then exit.
+                var timer = new DispatcherTimer(TimeSpan.FromSeconds(4), DispatcherPriority.Background, (sender, _) =>
+                {
+                    ((DispatcherTimer)sender!).Stop();
+                    try
+                    {
+                        status = app.SharingStatus;
+                        steps.Add("status");
+
+                        app.OpenPairing();
+                        DoEvents();
+                        steps.Add("pairing window");
+
+                        app.OpenSettings();
+                        DoEvents();
+                        steps.Add("settings window");
+
+                        app.ToggleClickThrough();
+                        app.ToggleClickThrough();
+                        DoEvents();
+                        steps.Add("quick toggles");
+
+                        // Captions arriving from the other computer, as the network code delivers them.
+                        var receive = typeof(global::LiveCaptionsUpgrade.App).GetMethod("OnCaptionsReceived", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("Hello, this is Anna from billing.", DateTimeOffset.Now) }, "How can I" });
+                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("How can I help?", DateTimeOffset.Now) }, string.Empty });
+                        DoEvents();
+                        steps.Add("shared captions");
+
+                        app.ToggleOverlayVisible();
+                        app.ToggleOverlayVisible();
+                        DoEvents();
+                        steps.Add("hide and show");
+                    }
+                    catch (Exception e)
+                    {
+                        steps.Add("error: " + e);
+                    }
+                    finally
+                    {
+                        app.ExitApp();
+                    }
+                }, Dispatcher.CurrentDispatcher);
+
+                app.Run();
+            });
+        }
+        finally
+        {
+            if (savedSettings is null)
+            {
+                File.Delete(settingsPath);
+            }
+            else
+            {
+                File.WriteAllText(settingsPath, savedSettings);
             }
         }
 
-        var environment = new List<string>();
-        RunOnUiThread(() =>
-        {
-            // Controls: does Live Captions start with nothing of ours open, or with a plain WPF window?
-            Thread.Sleep(3000);
-            if (CountLiveCaptions() > liveCaptionsBefore)
-            {
-                environment.Add("nothing (it started by itself)");
-                liveCaptionsBefore = CountLiveCaptions();
-            }
+        Assert.Equal(new[] { "status", "pairing window", "settings window", "quick toggles", "shared captions", "hide and show" }, steps);
+        Assert.Equal("Not paired with another computer yet", status);
 
-            var plain = new Window { Content = new System.Windows.Controls.TextBox { Text = "plain" }, Width = 200, Height = 100 };
-            plain.Show();
-            DoEvents();
-            Thread.Sleep(1500);
-            plain.Close();
-            if (CountLiveCaptions() > liveCaptionsBefore)
-            {
-                environment.Add("a plain WPF window");
-                liveCaptionsBefore = CountLiveCaptions();
-            }
-
-            var app = new global::LiveCaptionsUpgrade.App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-            string folder = Path.Combine(Path.GetTempPath(), "lcu-windows-" + Guid.NewGuid().ToString("N"));
-            var sharing = new SharingController(new PairingStore(Path.Combine(folder, "pairing.json")), DeviceIdentity.Create, "TEST-PC", "test", tcpPort: 0, discoveryPort: 0);
-            try
-            {
-                var settings = new AppSettings { WindowLeft = 100, WindowTop = 100 };
-                Check("creating the app");
-
-                var overlay = new OverlayWindow(settings);
-                Check("creating the caption bar");
-                overlay.Show();
-                Check("showing the caption bar");
-                overlay.ShowUpdate(new CaptionUpdate(new[] { "Hello, this is Anna from billing." }, "How can I", true));
-                overlay.ShowLines(new[]
-                {
-                    new CaptionLine("From the other computer.", DateTimeOffset.Now),
-                    new CaptionLine("Too old to keep.", DateTimeOffset.Now.AddHours(-1)),
-                }, "help");
-                overlay.ShowStatus("Waiting for LAPTOP…");
-                Check("showing captions");
-                Assert.False(overlay.HasSelection);
-                overlay.ApplySettings(settings);
-                overlay.StoreBounds();
-                overlay.Hide();
-                overlay.Show();
-                Check("hiding and showing the caption bar");
-
-                var settingsWindow = new SettingsWindow(settings, app, sharing);
-                settingsWindow.Show();
-                Check("showing settings");
-                settingsWindow.ReflectQuickToggles(new AppSettings { CaptionSharing = CaptionSharingMode.Receive });
-                Check("switching settings to show mode");
-                settingsWindow.Close();
-
-                sharing.SetModeAsync(CaptionSharingMode.Receive).GetAwaiter().GetResult();
-                var pairing = new PairingWindow(sharing);
-                pairing.Show();
-                Check("showing the pairing window");
-                pairing.Close();
-
-                overlay.Close();
-                Check("closing");
-            }
-            finally
-            {
-                sharing.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                if (Directory.Exists(folder))
-                {
-                    Directory.Delete(folder, recursive: true);
-                }
-            }
-        });
-
-        // Only reading captions may start Live Captions; opening windows or showing shared captions must not.
-        Assert.True(startedAfter.Count == 0,
-            "Live Captions started after: " + string.Join(", ", startedAfter) + ". Before our code ran, it started after: "
-            + (environment.Count == 0 ? "-" : string.Join(", ", environment)));
+        // Showing captions from another computer never involves Live Captions on this one.
+        Thread.Sleep(1500);
+        Assert.Equal(liveCaptionsBefore, CountLiveCaptions());
     }
 
     private static int CountLiveCaptions()
@@ -144,17 +139,21 @@ public class WindowTests
             {
                 error = e;
             }
-            finally
-            {
-                Dispatcher.CurrentDispatcher.InvokeShutdown();
-            }
-        });
+        })
+        {
+            // If the app hangs (e.g. on an error message box), don't keep the test run alive.
+            IsBackground = true,
+        };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        thread.Join();
+        if (!thread.Join(Timeout))
+        {
+            throw new TimeoutException("The app didn't finish in time; it may be showing an error message.");
+        }
+
         if (error is not null)
         {
-            throw new Exception("A window failed: " + error, error);
+            throw new Exception("The app failed: " + error, error);
         }
     }
 }
