@@ -134,6 +134,31 @@ public sealed class FramedConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Tells the other side that nothing more will be sent (once what was sent so far has arrived), while still
+    /// reading what it sends. It then closes its end.
+    /// </summary>
+    public async Task ShutdownSendAsync()
+    {
+        try
+        {
+            await _writeLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await _ssl.ShutdownAsync().ConfigureAwait(false);
+                _tcp.Client.Shutdown(SocketShutdown.Send);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            // Already closed or broken.
+        }
+    }
+
     /// <summary>Reads the next frame; returns null when the connection closed cleanly.</summary>
     public async Task<(FrameType Type, byte[] Payload)?> ReceiveFrameAsync(CancellationToken cancellationToken)
     {

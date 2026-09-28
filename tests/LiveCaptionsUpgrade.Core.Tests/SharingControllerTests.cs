@@ -61,10 +61,11 @@ internal sealed class TestSharingComputer : IAsyncDisposable
             SecondaryDialDelay = TimeSpan.FromMilliseconds(600),
             NewPairingGrace = newPairingGrace ?? TimeSpan.FromSeconds(30),
         };
-        controller.CaptionsReceived += (lines, pending) =>
+        controller.CaptionsReceived += (lines, pending, replaced) =>
         {
             lock (_lock)
             {
+                _lines.RemoveRange(_lines.Count - replaced, replaced);
                 _lines.AddRange(lines.Select(l => l.Text));
                 _pending = pending;
             }
@@ -120,6 +121,19 @@ public sealed class SharingControllerTests : IAsyncLifetime
         Assert.Equal("Sending captions to LAPTOP", _pc.Controller.Describe());
         Assert.Equal("Showing captions from PC", _laptop.Controller.Describe());
         Assert.Null(_laptop.Controller.DescribeProblemForReceiver());
+    }
+
+    [Fact]
+    public async Task A_number_rewritten_on_the_pc_is_replaced_on_the_laptop()
+    {
+        await PairAsync(_pc, _laptop);
+        _pc.Controller.Publish(new CaptionUpdate(new[] { "Card number?", "Three, zero." }, string.Empty, true));
+        await WaitAsync(() => _laptop.Received.Lines.Count == 2);
+
+        _pc.Controller.Publish(new CaptionUpdate(new[] { "3032 5817 4802 8929." }, string.Empty, true, Replaced: 1));
+        await WaitAsync(() => _laptop.Received.Lines.Contains("3032 5817 4802 8929."));
+
+        Assert.Equal(new[] { "Card number?", "3032 5817 4802 8929." }, _laptop.Received.Lines);
     }
 
     [Fact]

@@ -73,8 +73,11 @@ public sealed class SharingController : IAsyncDisposable
     /// </summary>
     public TimeSpan NewPairingGrace { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>In show mode: new sentences from the other computer (already de-duplicated) and its live text.</summary>
-    public event Action<IReadOnlyList<CaptionLine>, string>? CaptionsReceived;
+    /// <summary>
+    /// In show mode: new sentences from the other computer (already de-duplicated), its live text, and how many of
+    /// the sentences received before the new ones replace (see <see cref="CaptionUpdate.Replaced"/>).
+    /// </summary>
+    public event Action<IReadOnlyList<CaptionLine>, string, int>? CaptionsReceived;
 
     /// <summary>The connection, pairing or the other computer's status changed.</summary>
     public event Action? StateChanged;
@@ -104,7 +107,7 @@ public sealed class SharingController : IAsyncDisposable
     public bool IsRunning => _host is not null;
 
     /// <summary>Passes an update from Live Captions on to the other computer (when sending).</summary>
-    public void Publish(CaptionUpdate update) => _feed.Publish(update.NewSentences, update.Pending);
+    public void Publish(CaptionUpdate update) => _feed.Publish(update.NewSentences, update.Pending, update.Replaced);
 
     /// <summary>Passes this computer's Live Captions problem message on to the other computer, or null when all is well.</summary>
     public void SetSenderStatus(string? status) => _feed.SetStatus(status);
@@ -423,7 +426,7 @@ public sealed class SharingController : IAsyncDisposable
             // What was being said is out of date now; the reconnect brings the finished sentences.
             lock (_receiveLock)
             {
-                CaptionsReceived?.Invoke(Array.Empty<CaptionLine>(), string.Empty);
+                CaptionsReceived?.Invoke(Array.Empty<CaptionLine>(), string.Empty, 0);
             }
         }
 
@@ -445,8 +448,8 @@ public sealed class SharingController : IAsyncDisposable
                         }
                     }
 
-                    var (lines, pending) = _receiver.Accept(captions, DateTimeOffset.Now);
-                    CaptionsReceived?.Invoke(lines, pending);
+                    var (lines, pending, replaced) = _receiver.Accept(captions, DateTimeOffset.Now);
+                    CaptionsReceived?.Invoke(lines, pending, replaced);
                 }
 
                 break;

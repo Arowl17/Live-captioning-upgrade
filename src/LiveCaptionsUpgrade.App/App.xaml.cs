@@ -38,6 +38,7 @@ public partial class App : Application
     private readonly object _receivedLock = new();
     private List<CaptionLine> _receivedLines = new();
     private string _receivedPending = string.Empty;
+    private int _receivedReplaced;
     private bool _receivedScheduled;
     private bool _cleanedUp;
 
@@ -412,13 +413,17 @@ public partial class App : Application
     }
 
     /// <summary>Captions from the paired computer (network thread, in order).</summary>
-    private void OnCaptionsReceived(IReadOnlyList<CaptionLine> lines, string pending)
+    private void OnCaptionsReceived(IReadOnlyList<CaptionLine> lines, string pending, int replaced)
     {
         _transcript?.Write(lines);
 
-        // Messages can arrive faster than a slow computer redraws: collect them and show them in one go.
+        // Messages can arrive faster than a slow computer redraws: collect them and show them in one go. Lines
+        // replaced are taken back from those collected, or else from those already shown.
         lock (_receivedLock)
         {
+            int collected = Math.Min(replaced, _receivedLines.Count);
+            _receivedLines.RemoveRange(_receivedLines.Count - collected, collected);
+            _receivedReplaced += replaced - collected;
             _receivedLines.AddRange(lines);
             _receivedPending = pending;
             if (_receivedScheduled)
@@ -436,17 +441,20 @@ public partial class App : Application
     {
         List<CaptionLine> lines;
         string pending;
+        int replaced;
         lock (_receivedLock)
         {
             lines = _receivedLines;
             pending = _receivedPending;
+            replaced = _receivedReplaced;
             _receivedLines = new List<CaptionLine>();
+            _receivedReplaced = 0;
             _receivedScheduled = false;
         }
 
         if (_activeSharing == CaptionSharingMode.Receive || _sharing?.Mode == CaptionSharingMode.Receive)
         {
-            _overlay?.ShowLines(lines, pending);
+            _overlay?.ShowLines(lines, pending, replaced);
         }
     }
 

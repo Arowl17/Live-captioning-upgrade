@@ -17,7 +17,7 @@ public sealed class CaptionFeed
     public const int MaxSnapshotChars = 200_000;
 
     private readonly object _lock = new();
-    private readonly List<(long Id, string Text, DateTimeOffset Time)> _lines = new();
+    private readonly List<(long Id, string Text, DateTimeOffset Time, long Replaces)> _lines = new();
     private readonly List<Action<ControlMessage>> _subscribers = new();
     private readonly Func<DateTimeOffset> _clock;
     private long _nextId = 1;
@@ -32,8 +32,11 @@ public sealed class CaptionFeed
     /// <summary>Identifies this run of the app; the receiver starts counting lines afresh when it changes.</summary>
     public string Session { get; } = Guid.NewGuid().ToString("N");
 
-    /// <summary>Records new finished sentences and the sentence being spoken, and passes them on.</summary>
-    public void Publish(IReadOnlyList<string> sentences, string pending)
+    /// <summary>
+    /// Records new finished sentences and the sentence being spoken, and passes them on. The first sentence may
+    /// replace the last <paramref name="replaced"/> ones (see <see cref="CaptionUpdate.Replaced"/>).
+    /// </summary>
+    public void Publish(IReadOnlyList<string> sentences, string pending, int replaced = 0)
     {
         lock (_lock)
         {
@@ -46,9 +49,17 @@ public sealed class CaptionFeed
                     continue;
                 }
 
+                long replaces = 0;
+                int remove = added.Count == 0 ? Math.Min(replaced, _lines.Count) : 0;
+                if (remove > 0)
+                {
+                    replaces = _lines[^remove].Id;
+                    _lines.RemoveRange(_lines.Count - remove, remove);
+                }
+
                 long id = _nextId++;
-                _lines.Add((id, sentence, now));
-                added.Add(new SharedLine(id, sentence, 0));
+                _lines.Add((id, sentence, now, replaces));
+                added.Add(new SharedLine(id, sentence, 0, replaces));
             }
 
             bool pendingChanged = !string.Equals(pending, _pending, StringComparison.Ordinal);
@@ -103,14 +114,14 @@ public sealed class CaptionFeed
         int chars = 0;
         for (int i = _lines.Count - 1; i >= 0; i--)
         {
-            var (id, text, time) = _lines[i];
+            var (id, text, time, replaces) = _lines[i];
             chars += text.Length;
             if (chars > MaxSnapshotChars)
             {
                 break;
             }
 
-            lines.Add(new SharedLine(id, text, (long)Math.Max(0, (now - time).TotalMilliseconds)));
+            lines.Add(new SharedLine(id, text, (long)Math.Max(0, (now - time).TotalMilliseconds), replaces));
         }
 
         lines.Reverse();
@@ -178,11 +189,18 @@ public sealed class CaptionFeedReceiver
     private const int MaxSessionLength = 64;
     private const int MaxTextLength = 4000;
 
+    // Ids of the latest lines shown, which a later line may replace.
+    private const int MaxReplaceable = 256;
+
+    private readonly List<long> _shown = new();
     private string? _session;
     private long _lastId;
 
-    /// <summary>Returns the sentences not received before (with the time they were finished) and the live text.</summary>
-    public (IReadOnlyList<CaptionLine> Lines, string Pending) Accept(CaptionsMessage message, DateTimeOffset now)
+    /// <summary>
+    /// Returns the sentences not received before (with the time they were finished), the live text, and how many
+    /// of the lines returned before the new ones replace (Live Captions rewrote them).
+    /// </summary>
+    public (IReadOnlyList<CaptionLine> Lines, string Pending, int Replaced) Accept(CaptionsMessage message, DateTimeOffset now)
     {
         string session = message.Session ?? string.Empty;
         if (session.Length > MaxSessionLength)
@@ -195,9 +213,12 @@ public sealed class CaptionFeedReceiver
             // The other computer's app was restarted: its lines are numbered from the start again.
             _session = session;
             _lastId = 0;
+            _shown.Clear();
         }
 
         var lines = new List<CaptionLine>();
+        int replaced = 0;
+        int shownBefore = _shown.Count;
         foreach (var line in message.Lines ?? Array.Empty<SharedLine>())
         {
             if (line is null || line.Id <= _lastId)
@@ -212,11 +233,32 @@ public sealed class CaptionFeedReceiver
                 continue;
             }
 
+            // Take back the lines it replaces: from the new ones, or else from those returned before.
+            while (line.Replaces > 0 && _shown.Count > 0 && _shown[^1] >= line.Replaces)
+            {
+                _shown.RemoveAt(_shown.Count - 1);
+                if (_shown.Count >= shownBefore)
+                {
+                    lines.RemoveAt(lines.Count - 1);
+                }
+                else
+                {
+                    shownBefore--;
+                    replaced++;
+                }
+            }
+
             var age = TimeSpan.FromMilliseconds(Math.Clamp(line.AgeMs, 0, (long)CaptionFeed.Retention.TotalMilliseconds));
             lines.Add(new CaptionLine(text, now - age));
+            _shown.Add(line.Id);
         }
 
-        return (lines, Clean(message.Pending));
+        if (_shown.Count > MaxReplaceable)
+        {
+            _shown.RemoveRange(0, _shown.Count - MaxReplaceable);
+        }
+
+        return (lines, Clean(message.Pending), replaced);
     }
 
     private static string Clean(string? text)

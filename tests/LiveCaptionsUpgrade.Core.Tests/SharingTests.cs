@@ -372,7 +372,8 @@ public class SharingTests
                 switch (message)
                 {
                     case CaptionsMessage captions:
-                        var (lines, pending) = _receiver.Accept(captions, DateTimeOffset.Now);
+                        var (lines, pending, replaced) = _receiver.Accept(captions, DateTimeOffset.Now);
+                        _lines.RemoveRange(_lines.Count - replaced, replaced);
                         _lines.AddRange(lines.Select(l => l.Text));
                         _pending = pending;
                         break;
@@ -486,10 +487,64 @@ public class CaptionFeedTests
     }
 
     [Fact]
+    public void A_rewritten_number_replaces_its_first_digits_for_the_other_computer_too()
+    {
+        var feed = new CaptionFeed();
+        var messages = new List<ControlMessage>();
+        using var _ = feed.Subscribe(messages.Add);
+        feed.Publish(new[] { "My card is.", "Four, one." }, string.Empty);
+        feed.Publish(new[] { "One, one." }, string.Empty);
+        feed.Publish(new[] { "4111 1111 2222 3333.", "Expiry?" }, string.Empty, replaced: 2);
+
+        var update = (CaptionsMessage)messages[^1];
+        Assert.Equal(new[] { 2L, 0L }, update.Lines.Select(l => l.Replaces));
+
+        // One connecting later only gets the number as it is now.
+        var later = new List<ControlMessage>();
+        using var __ = feed.Subscribe(later.Add);
+        Assert.Equal(new[] { "My card is.", "4111 1111 2222 3333.", "Expiry?" }, ((CaptionsMessage)later[0]).Lines.Select(l => l.Text));
+    }
+
+    [Fact]
+    public void Receiver_takes_back_replaced_lines_whether_shown_already_or_not()
+    {
+        var receiver = new CaptionFeedReceiver();
+        var now = DateTimeOffset.Now;
+        receiver.Accept(new CaptionsMessage("a", new[] { new SharedLine(1, "Card.", 0), new SharedLine(2, "Four.", 0) }, "", false), now);
+
+        // Replacing a line returned before, and one that came in the same message.
+        var (lines, _, replaced) = receiver.Accept(
+            new CaptionsMessage("a", new[] { new SharedLine(3, "One.", 0), new SharedLine(4, "41.", 0, Replaces: 2), new SharedLine(5, "Yes.", 0) }, "", false),
+            now);
+
+        Assert.Equal(new[] { "41.", "Yes." }, lines.Select(l => l.Text));
+        Assert.Equal(1, replaced);
+
+        // After reconnecting: a snapshot with the line that replaced ones it had.
+        (lines, _, replaced) = receiver.Accept(
+            new CaptionsMessage("a", new[] { new SharedLine(1, "Card.", 0), new SharedLine(4, "41.", 0, 2), new SharedLine(5, "Yes.", 0), new SharedLine(6, "4111.", 0, 4) }, "", true),
+            now);
+        Assert.Equal(new[] { "4111." }, lines.Select(l => l.Text));
+        Assert.Equal(2, replaced);
+    }
+
+    [Fact]
+    public void Lines_from_before_replacements_existed_still_arrive_and_the_other_way_round()
+    {
+        // As an older version sends a line, and receives one (it ignores what it doesn't know).
+        var old = (CaptionsMessage)ControlJson.Deserialize(System.Text.Encoding.UTF8.GetBytes(
+            "{\"t\":\"captions\",\"session\":\"a\",\"lines\":[{\"id\":1,\"text\":\"Hi.\",\"ageMs\":0}],\"pending\":\"\",\"snapshot\":false}"))!;
+        Assert.Equal(new SharedLine(1, "Hi.", 0), old.Lines[0]);
+
+        string json = System.Text.Encoding.UTF8.GetString(ControlJson.Serialize(new CaptionsMessage("a", new[] { new SharedLine(2, "12.", 0, 1) }, "", false)));
+        Assert.Contains("\"replaces\":1", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Receiver_cleans_up_what_it_is_given()
     {
         var receiver = new CaptionFeedReceiver();
-        var (lines, pending) = receiver.Accept(
+        var (lines, pending, _) = receiver.Accept(
             new CaptionsMessage("a", new[] { new SharedLine(1, "  Two \r\n lines. ", -50), new SharedLine(2, "   ", 0), new SharedLine(3, new string('x', 5000), long.MaxValue) }, new string('y', 5000), false),
             DateTimeOffset.Now);
 

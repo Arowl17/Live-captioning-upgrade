@@ -44,7 +44,11 @@ public sealed record UnpairMessage : ControlMessage;
 
 /// <summary>A finished sentence. Ids increase within a <see cref="CaptionsMessage.Session"/>.</summary>
 /// <param name="AgeMs">How long ago it was finished, when the message was sent (clocks may differ between computers).</param>
-public sealed record SharedLine(long Id, string Text, long AgeMs);
+/// <param name="Replaces">
+/// If not 0, the id of the first of the lines before this one that it replaces, up to this one: Live Captions rewrote
+/// them into it (e.g. a number's first digits sent before the rest was read out). Older versions ignore it.
+/// </param>
+public sealed record SharedLine(long Id, string Text, long AgeMs, long Replaces = 0);
 
 /// <summary>
 /// New finished sentences and the sentence being spoken. The first message after connecting is a

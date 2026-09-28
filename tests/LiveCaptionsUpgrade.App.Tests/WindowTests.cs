@@ -32,6 +32,7 @@ public class WindowTests
         new AppSettings { CaptionSharing = CaptionSharingMode.Receive }.Save(settingsPath);
         int liveCaptionsBefore = CountLiveCaptions();
         string? status = null;
+        string? shown = null;
         var steps = new List<string>();
         try
         {
@@ -64,9 +65,12 @@ public class WindowTests
 
                         // Captions arriving from the other computer, as the network code delivers them.
                         var receive = typeof(global::LiveCaptionsUpgrade.App).GetMethod("OnCaptionsReceived", BindingFlags.Instance | BindingFlags.NonPublic)!;
-                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("Hello, this is Anna from billing.", DateTimeOffset.Now) }, "How can I" });
-                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("How can I help?", DateTimeOffset.Now) }, string.Empty });
+                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("Hello, this is Anna from billing.", DateTimeOffset.Now) }, "How can I", 0 });
+                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("How can I help?", DateTimeOffset.Now), new("Four, one.", DateTimeOffset.Now) }, string.Empty, 0 });
                         DoEvents();
+                        receive.Invoke(app, new object[] { new List<CaptionLine> { new("4111 1111.", DateTimeOffset.Now) }, string.Empty, 1 });
+                        DoEvents();
+                        shown = OverlayText(app);
                         steps.Add("shared captions");
 
                         app.ToggleOverlayVisible();
@@ -102,9 +106,22 @@ public class WindowTests
         Assert.Equal(new[] { "status", "pairing window", "settings window", "quick toggles", "shared captions", "hide and show" }, steps);
         Assert.Equal("Not paired with another computer yet", status);
 
+        // The number rewritten on the other computer replaced its first digits.
+        Assert.Equal("Hello, this is Anna from billing.|How can I help?|4111 1111.", shown);
+
         // Showing captions from another computer never involves Live Captions on this one.
         Thread.Sleep(1500);
         Assert.Equal(liveCaptionsBefore, CountLiveCaptions());
+    }
+
+    /// <summary>The overlay's lines, joined with "|".</summary>
+    private static string OverlayText(global::LiveCaptionsUpgrade.App app)
+    {
+        const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+        var overlay = app.GetType().GetField("_overlay", Private)!.GetValue(app)!;
+        var captions = (System.Windows.Controls.RichTextBox)overlay.GetType().GetField("Captions", Private)!.GetValue(overlay)!;
+        string text = new System.Windows.Documents.TextRange(captions.Document.ContentStart, captions.Document.ContentEnd).Text;
+        return string.Join("|", text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries));
     }
 
     private static int CountLiveCaptions()

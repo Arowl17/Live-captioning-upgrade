@@ -19,7 +19,8 @@ public class LiveCaptionsSimulationTests
         "about", "because", "before", "could", "maybe", "never", "really", "still", "today", "through", "while",
     };
 
-    public static IEnumerable<object[]> Seeds() => Enumerable.Range(1, 50).Select(seed => new object[] { seed });
+    public static IEnumerable<object[]> Seeds() =>
+        Enumerable.Range(1, int.TryParse(Environment.GetEnvironmentVariable("SIMULATION_SEEDS"), out int count) ? count : 50).Select(seed => new object[] { seed });
 
     [Theory]
     [MemberData(nameof(Seeds))]
@@ -218,11 +219,11 @@ public class LiveCaptionsSimulationTests
             if (random.NextDouble() < options.BlankChance)
             {
                 // Live Captions momentarily shows no text.
-                emitted.AddRange(tracker.Process(string.Empty, now).NewSentences);
+                emitted.Apply(tracker.Process(string.Empty, now));
                 now = now.AddMilliseconds(150);
             }
 
-            emitted.AddRange(tracker.Process(Visible(words, options.LineWidth, options.MaxLines), now).NewSentences);
+            emitted.Apply(tracker.Process(Visible(words, options.LineWidth, options.MaxLines), now));
         }
 
         foreach (string sentence in script)
@@ -338,7 +339,7 @@ public class LiveCaptionsSimulationTests
         }
 
         Show(2000);
-        emitted.AddRange(tracker.Flush());
+        emitted.Apply(tracker.Flush());
         return (emitted, string.Join(" ", words));
 
         void ReadOutDigits(string number)

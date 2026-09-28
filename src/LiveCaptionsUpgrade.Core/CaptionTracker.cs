@@ -4,7 +4,12 @@ namespace LiveCaptionsUpgrade.Core;
 /// <param name="NewSentences">Sentences that became final since the previous snapshot, in spoken order.</param>
 /// <param name="Pending">Text that is still being recognised and may change.</param>
 /// <param name="TextChanged">True when the Live Captions text differs from the previous snapshot.</param>
-public sealed record CaptionUpdate(IReadOnlyList<string> NewSentences, string Pending, bool TextChanged);
+/// <param name="Replaced">
+/// How many of the sentences emitted last the first of <paramref name="NewSentences"/> replaces: Live Captions
+/// rewrote them into it, e.g. the first digits of a number emitted before the rest was read out ("Three, zero."
+/// becoming "3032 5817 4802 8929."). It always has all their digits.
+/// </param>
+public sealed record CaptionUpdate(IReadOnlyList<string> NewSentences, string Pending, bool TextChanged, int Replaced = 0);
 
 /// <summary>
 /// Turns the rolling text block shown by Windows Live Captions into a stream of finished sentences.
@@ -29,7 +34,7 @@ public sealed class CaptionTracker
 
     // How many recently committed sentences to look for when locating where we left off. Generous, because
     // Live Captions may end a long sentence (an address, a card number) too early several times over.
-    private const int AnchorDepth = 16;
+    private const int AnchorDepth = 24;
 
     // Words from the start of the visible text used to find where it continues the unfinished sentence.
     // With this many words, one of them may differ (Live Captions corrected it as the line scrolled away).
@@ -53,8 +58,21 @@ public sealed class CaptionTracker
     // ("Riverside, Texas seven." becoming part of "Riverside TX 75231 in the main.").
     private const int MaxRewrittenSentences = 8;
 
+    // A number read out digit by digit may have been emitted as a sentence per digit before being rewritten as one.
+    private const int MaxRewrittenNumberSentences = 24;
+
     // Fewest words for the top line to be recognised as the end of an emitted sentence despite a rewritten word.
     private const int MinFuzzyTailWords = 5;
+
+    // How much of the text Live Captions shows a number still being read out may take up and stay in the live text.
+    // The rest must be emitted before it scrolls off the top.
+    private const double MaxHeldShare = 0.45;
+
+    // How many of the latest times lines scrolled off the top tell how much text Live Captions' window holds.
+    private const int ScrollsRemembered = 5;
+
+    // Fewest digits in a number for a rewrite of it to be recognised despite one digit being different.
+    private const int MinDigitsForOneDifferent = 6;
 
     // A distinctive sentence identical to one of this many just emitted is not emitted again.
     private const int RepeatWindow = 3;
@@ -68,8 +86,21 @@ public sealed class CaptionTracker
     private bool _idleHandled;
     private string _pending = string.Empty;
 
+    // How much text Live Captions showed just before its latest lines scrolled off the top (about what its window
+    // holds; it changes if the window is resized). Empty until then: before that, nothing scrolls away.
+    private readonly Queue<int> _fullTextLengths = new();
+
     // The top line starts mid-sentence (lowercase), i.e. the start of its sentence has scrolled away.
     private bool _topIsCutOff;
+
+    // Found while committing: the emitted sentences from this one on were rewritten into this segment, which
+    // replaces them if it's emitted now.
+    private int _replaceFrom = -1;
+    private int _replaceSegment = -1;
+
+    // How many of the sentences emitted last the first sentence of the pending text is to replace, once emitted.
+    // Remembered because the sentence before them, which that is worked out from, may scroll away first.
+    private int _pendingReplaces;
 
     public CaptionTracker(TimeSpan idleFinalizeDelay, double similarityThreshold = 0.8)
     {
@@ -90,6 +121,15 @@ public sealed class CaptionTracker
 
         if (changed)
         {
+            if (HasScrolled(_text, text))
+            {
+                _fullTextLengths.Enqueue(Math.Max(_text.Length, text.Length));
+                if (_fullTextLengths.Count > ScrollsRemembered)
+                {
+                    _fullTextLengths.Dequeue();
+                }
+            }
+
             _text = text;
             _lastChange = now;
             _idleHandled = false;
@@ -104,30 +144,38 @@ public sealed class CaptionTracker
         }
 
         bool idle = !changed;
-        var newSentences = Commit(includeTerminatedLast: idle, includeUnterminatedLast: false);
-        return new CaptionUpdate(newSentences, _pending, changed);
+        var (newSentences, replaced) = Commit(includeTerminatedLast: idle, includeUnterminatedLast: false);
+        return new CaptionUpdate(newSentences, _pending, changed, replaced);
     }
 
     /// <summary>Finalises everything still pending, including an unfinished last sentence. Call when stopping.</summary>
-    public IReadOnlyList<string> Flush() => Commit(includeTerminatedLast: true, includeUnterminatedLast: true);
+    public CaptionUpdate Flush()
+    {
+        var (newSentences, replaced) = Commit(includeTerminatedLast: true, includeUnterminatedLast: true);
+        return new CaptionUpdate(newSentences, _pending, TextChanged: true, replaced);
+    }
 
     /// <summary>Forgets all state, e.g. after reconnecting to a new Live Captions window.</summary>
     public void Reset()
     {
         _committed.Clear();
         _text = string.Empty;
+        _fullTextLengths.Clear();
+        _pendingReplaces = 0;
         _lastChange = DateTimeOffset.MinValue;
         _idleHandled = false;
         _pending = string.Empty;
     }
 
-    private IReadOnlyList<string> Commit(bool includeTerminatedLast, bool includeUnterminatedLast)
+    private (IReadOnlyList<string> Added, int Replaced) Commit(bool includeTerminatedLast, bool includeUnterminatedLast)
     {
+        _replaceFrom = -1;
+        _replaceSegment = -1;
         if (_text.Length == 0)
         {
             // Live Captions shows nothing, usually just for a moment: keep the unfinished sentence. If the text
             // stays blank (idle) or we're stopping, that sentence is over, so emit it.
-            return includeTerminatedLast || includeUnterminatedLast ? CommitPending() : Array.Empty<string>();
+            return (includeTerminatedLast || includeUnterminatedLast ? CommitPending() : Array.Empty<string>(), 0);
         }
 
         var segments = SentenceSplitter.Split(_text);
@@ -142,17 +190,30 @@ public sealed class CaptionTracker
             // after its start scrolled away. Go with whichever explanation more of the words support.
             // (A single overlapping word is only trusted if the text doesn't start like the pending sentence:
             // "... I think. Think again" merged into "... I think, think again" starts with a new "think".)
-            var emittedOverlap = EmittedOverlap(texts, allowSingleWord: !StartsLikePending(segments));
+            bool startsLikePending = StartsLikePending(segments);
+            var emittedOverlap = EmittedOverlap(texts, allowSingleWord: !startsLikePending);
             if (TryRestoreScrolledOffStart(segments, out string restored, out int restoredWords) && restoredWords > emittedOverlap.Count)
             {
                 segments = SentenceSplitter.Split(restored);
                 normalized = NormalizeAll(segments);
                 (anchor, anchorCommitted) = FindAnchor(segments, normalized);
                 texts = segments.Select(segment => segment.Text).ToArray();
+                if (anchor < 0)
+                {
+                    FindPendingReplacement(normalized);
+                }
+            }
+            else if (startsLikePending && FindPendingReplacement(normalized))
+            {
+                // The text starts with the pending sentence, which replaces the sentences emitted last.
             }
             else if (emittedOverlap.Count > 0)
             {
                 DropWords(texts, normalized, 0, emittedOverlap[^1]);
+            }
+            else
+            {
+                FindRewrittenAddress(normalized);
             }
         }
 
@@ -175,18 +236,30 @@ public sealed class CaptionTracker
 
         finalCount = Math.Max(finalCount, 0);
 
-        // A number being read out (a phone or card number, a zip code) comes a few digits at a time, and Live Captions
-        // keeps splitting, joining and rewriting it ("Seven." "Seven, seven." "7750."). While the text still goes on
-        // with a number, keep the sentences ending in one in the live text, and emit them once the number is over.
-        if (!includeTerminatedLast && !includeUnterminatedLast && finalCount == segments.Count - 1 && StartsWithNumber(texts[^1]))
+        // A number being read out (a card or phone number, a zip code) comes a few digits at a time, with pauses
+        // between groups, and Live Captions keeps splitting, joining and rewriting it ("Seven." "Seven, seven."
+        // "7750."). Emitting it before it's complete would put the same digits in the history twice. So sentences
+        // ending in a number stay in the live text while the text goes on with a number, and at the end of the text
+        // they wait, however long the pause, for something else to be said (or for stopping).
+        // Only while it's safely inside the text shown, though: held too long it would scroll off the top unseen.
+        if (!includeUnterminatedLast)
         {
-            while (finalCount > anchor + 1 && EndsWithNumber(texts[finalCount - 1]))
+            bool numberGoesOn = finalCount == segments.Count - 1 ? StartsWithNumber(texts[^1]) : finalCount == segments.Count;
+            if (numberGoesOn)
             {
-                finalCount--;
+                int holdable = _fullTextLengths.Count > 0 ? (int)(Math.Max(_fullTextLengths.Max(), _text.Length) * MaxHeldShare) : int.MaxValue;
+                int fromEnd = segments.Skip(finalCount).Sum(segment => segment.Text.Length + 1);
+                while (finalCount > anchor + 1 && EndsWithNumber(texts[finalCount - 1])
+                    && fromEnd + segments[finalCount - 1].Text.Length + 1 <= holdable)
+                {
+                    fromEnd += segments[finalCount - 1].Text.Length + 1;
+                    finalCount--;
+                }
             }
         }
 
         var added = new List<string>();
+        int replaced = 0;
         int committedBefore = _committed.Count;
         for (int i = anchor + 1; i < finalCount; i++)
         {
@@ -198,13 +271,39 @@ public sealed class CaptionTracker
                 continue;
             }
 
+            if (i == _replaceSegment && added.Count == 0)
+            {
+                replaced = _committed.Count - _replaceFrom;
+                _committed.RemoveRange(_replaceFrom, replaced);
+                committedBefore = _committed.Count;
+            }
+
             Remember(texts[i], normalized[i]);
             added.Add(texts[i]);
         }
 
         int pendingStart = Math.Max(anchor + 1, finalCount);
         _pending = string.Join(" ", texts.Skip(pendingStart).Where(text => TextSimilarity.Normalize(text).Length > 0));
-        return added;
+        _pendingReplaces = replaced == 0 && _replaceSegment >= 0 && _replaceSegment == Array.FindIndex(normalized, pendingStart, text => text.Length > 0)
+            ? _committed.Count - _replaceFrom
+            : 0;
+        return (added, replaced);
+    }
+
+    /// <summary>
+    /// The text starts with the pending text, whose first sentence was to replace the sentences emitted last (see
+    /// <see cref="_pendingReplaces"/>): it still does, if it still has their digits. Returns true if so.
+    /// </summary>
+    private bool FindPendingReplacement(string[] normalized)
+    {
+        int from = _committed.Count - _pendingReplaces;
+        if (_pendingReplaces == 0 || from < 0)
+        {
+            return false;
+        }
+
+        FindRewrittenNumber(normalized, 0, from);
+        return _replaceSegment >= 0;
     }
 
     /// <summary>Emits the remembered unfinished text as finished, e.g. after Live Captions went blank.</summary>
@@ -222,6 +321,7 @@ public sealed class CaptionTracker
         }
 
         _pending = string.Empty;
+        _pendingReplaces = 0;
         return added;
     }
 
@@ -231,10 +331,8 @@ public sealed class CaptionTracker
     /// </summary>
     private void SkipMergedSentences(string[] texts, string[] normalized, int firstSegment, int firstMerged)
     {
-        var visible = MergedWords(texts, firstSegment, firstMerged);
-        if (visible.Count > 0)
+        if (SkipMergedWords(texts, normalized, firstSegment, firstMerged))
         {
-            DropWords(texts, normalized, firstSegment, visible[^1]);
             return;
         }
 
@@ -264,6 +362,7 @@ public sealed class CaptionTracker
 
         if (lastShown < 0)
         {
+            FindRewrittenNumber(normalized, firstSegment, firstMerged);
             return;
         }
 
@@ -273,13 +372,217 @@ public sealed class CaptionTracker
             normalized[s] = string.Empty;
         }
 
-        // The next sentence may still start with words of the ones emitted after those.
-        var rest = MergedWords(texts, lastShown + 1, nextCommitted);
-        if (rest.Count > 0)
+        // The next sentence may still start with words of the ones emitted after those, or be what they were
+        // rewritten into.
+        if (!SkipMergedWords(texts, normalized, lastShown + 1, nextCommitted))
         {
-            DropWords(texts, normalized, lastShown + 1, rest[^1]);
+            FindRewrittenNumber(normalized, lastShown + 1, nextCommitted);
         }
     }
+
+    /// <summary>
+    /// If the text from <paramref name="firstSegment"/> starts with the words of the sentences emitted from
+    /// <paramref name="firstMerged"/> on, removes them (or has the sentence they're part of replace them) and
+    /// returns true.
+    /// </summary>
+    private bool SkipMergedWords(string[] texts, string[] normalized, int firstSegment, int firstMerged)
+    {
+        var visible = MergedWords(texts, firstSegment, firstMerged);
+        if (visible.Count == 0)
+        {
+            return false;
+        }
+
+        // The last of them may end on the first digits of a number the text now carries on with ("My card is 4111."
+        // now "My card is 4111 1111 2222 3333."): then the whole sentence replaces them, rather than the rest of
+        // the number being emitted on its own.
+        var last = visible[^1];
+        int wordsBefore = visible.FindIndex(word => word.Segment == last.Segment);
+        int replaceFrom = CommittedStartingAt(firstMerged, wordsBefore);
+        string[] tokens = texts[last.Segment].Split(' ');
+        string? next = tokens.Skip(last.Token + 1).FirstOrDefault(token => TextSimilarity.Normalize(token).Length > 0);
+        if (replaceFrom >= 0 && next is not null && IsNumberWord(next) && IsNumberWord(last.Key)
+            && ContinuesDigits(normalized[last.Segment], Merged(_committed.Count - 1, _committed.Count - replaceFrom)))
+        {
+            for (int s = firstSegment; s < last.Segment; s++)
+            {
+                texts[s] = string.Empty;
+                normalized[s] = string.Empty;
+            }
+
+            _replaceFrom = replaceFrom;
+            _replaceSegment = last.Segment;
+            return true;
+        }
+
+        DropWords(texts, normalized, firstSegment, last);
+        return true;
+    }
+
+    /// <summary>The committed sentence (from <paramref name="first"/> on) starting <paramref name="words"/> words after it, or -1.</summary>
+    private int CommittedStartingAt(int first, int words)
+    {
+        for (int k = first; k < _committed.Count && words >= 0; k++)
+        {
+            if (words == 0)
+            {
+                return k;
+            }
+
+            words -= _committed[k].Normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// The sentences emitted from <paramref name="from"/> on aren't in the text any more, although the one before
+    /// them is: Live Captions rewrote them. If they were the first digits of the number in the next sentence ("Three,
+    /// zero." now "3032 5817 4802 8929."), or its start ("Riverside, Texas seven." now "Riverside TX 75231 in the main."),
+    /// that sentence replaces them. (Their digits may carry on into the sentences after it: "Six, one, three, one,
+    /// seven." now "6131. 7311.". Those are emitted after it, so the history still has every digit.)
+    /// </summary>
+    private void FindRewrittenNumber(string[] normalized, int firstSegment, int from)
+    {
+        int count = _committed.Count - from;
+        int s = Array.FindIndex(normalized, firstSegment, text => text.Length > 0);
+        if (count <= 0 || count > MaxRewrittenNumberSentences || s < 0)
+        {
+            return;
+        }
+
+        // They must start alike: both with (the same) digits, or with the same word.
+        string rewritten = Merged(_committed.Count - 1, count);
+        string first = rewritten.Split(' ')[0];
+        bool sameStart = IsNumberWord(first)
+            ? StartsWithNumber(normalized[s])
+            : string.Equals(first, normalized[s].Split(' ')[0], StringComparison.Ordinal);
+        if (sameStart && ContinuesDigits(string.Join(" ", normalized.Skip(s)), rewritten))
+        {
+            _replaceFrom = from;
+            _replaceSegment = s;
+        }
+    }
+
+    /// <summary>
+    /// With nothing emitted in sight, the text may still start with a rewrite of the sentences emitted last, if they
+    /// were part of an address (or the like) that Live Captions closed too soon: "Seven, nine, six Elm Street, Irving,
+    /// TX eight, seven." now "0796 Elm Street, Irving, TX 87669.". Only if it has all their words (at least two
+    /// besides numbers, so that it can't be a coincidence) and digits.
+    /// </summary>
+    private void FindRewrittenAddress(string[] normalized)
+    {
+        int s = Array.FindIndex(normalized, text => text.Length > 0);
+        if (s < 0)
+        {
+            return;
+        }
+
+        string[] shown = normalized[s].Split(' ');
+        for (int count = Math.Min(MaxRewrittenNumberSentences, _committed.Count); count >= 1; count--)
+        {
+            string rewritten = Merged(_committed.Count - 1, count);
+            string[] words = rewritten.Split(' ').Where(word => !IsNumberWord(word)).ToArray();
+            if (words.Length >= 2 && IsSubsequence(words, shown))
+            {
+                FindRewrittenNumber(normalized, s, _committed.Count - count);
+                if (_replaceSegment >= 0)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private static bool IsSubsequence(string[] words, string[] text)
+    {
+        int next = 0;
+        foreach (string word in text)
+        {
+            if (next < words.Length && string.Equals(word, words[next], StringComparison.Ordinal))
+            {
+                next++;
+            }
+        }
+
+        return next == words.Length;
+    }
+
+    /// <summary>
+    /// True if <paramref name="text"/> starts with the digits of <paramref name="start"/> (at least one), and then
+    /// maybe more. In a longer number one digit may differ: Live Captions may have fixed a digit it had doubled or
+    /// dropped ("Two. Two, two, four" becoming "2240").
+    /// </summary>
+    private static bool ContinuesDigits(string text, string start)
+    {
+        string? digits = DigitsOf(start);
+        string? all = DigitsOf(text);
+        if (digits is not { Length: > 0 } || all is null)
+        {
+            return false;
+        }
+
+        if (all.StartsWith(digits, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (digits.Length < MinDigitsForOneDifferent)
+        {
+            return false;
+        }
+
+        for (int length = digits.Length - 1; length <= Math.Min(digits.Length + 1, all.Length); length++)
+        {
+            if (TextSimilarity.Levenshtein(digits, all[..length]) <= 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The digits in normalized text, spelled-out ones too ("three oh double 5" is "3055"), or null if it has number
+    /// words that aren't digits ("twenty", "hundred"), which can't be compared digit by digit.
+    /// </summary>
+    private static string? DigitsOf(string text)
+    {
+        var digits = new System.Text.StringBuilder();
+        int repeat = 1;
+        foreach (string word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int digit = Array.IndexOf(DigitNames, word);
+            if (word == "oh")
+            {
+                digit = 0;
+            }
+
+            if (digit >= 0)
+            {
+                digits.Append((char)('0' + digit), repeat);
+                repeat = 1;
+            }
+            else if (word is "double" or "triple")
+            {
+                repeat = word == "double" ? 2 : 3;
+            }
+            else if (NumberWords.Contains(word))
+            {
+                return null;
+            }
+            else
+            {
+                digits.Append(word.Where(char.IsDigit).ToArray());
+                repeat = 1;
+            }
+        }
+
+        return digits.ToString();
+    }
+
+    private static readonly string[] DigitNames = { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
 
     /// <summary>
     /// Looks for <paramref name="sentence"/> among the committed sentences from <paramref name="from"/> on (a few
@@ -357,6 +660,30 @@ public sealed class CaptionTracker
         return IsNumberWord(last);
     }
 
+    /// <summary>
+    /// True if <paramref name="after"/> starts part-way into <paramref name="before"/>, i.e. its first line scrolled
+    /// off the top. (Not merely shorter: rewriting "One, eight, four." as "184." shortens the text too.)
+    /// </summary>
+    private static bool HasScrolled(string before, string after)
+    {
+        string[] old = TextSimilarity.Normalize(before).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string[] probe = TextSimilarity.Normalize(after).Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(ProbeWords).ToArray();
+        if (probe.Length < 3 || old.Length <= probe.Length || probe[0] == old[0])
+        {
+            return false;
+        }
+
+        for (int start = 1; start + probe.Length <= old.Length; start++)
+        {
+            if (old.AsSpan(start, probe.Length).SequenceEqual(probe))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsFinishedSentence(string text) => SentenceSplitter.Split(text) is [{ IsTerminated: true }];
 
     /// <summary>How many words from <paramref name="firstSegment"/> on are the sentences emitted from <paramref name="firstMerged"/> on.</summary>
@@ -396,6 +723,8 @@ public sealed class CaptionTracker
 
         // Emitted words, with whether each was capitalised: the leftover of emitted text keeps its capitals, so
         // "Waiting about delivery ..." (a new sentence) isn't the "... card waiting about." emitted before it.
+        // A lowercase top is the other way round: it may well be emitted sentences Live Captions has joined since,
+        // with their capitals dropped ("Eight, four." and "Six, eight." now "... eight, four, six, eight.").
         var emittedWords = new List<string>();
         var emittedCapitalised = new List<bool>();
         for (int k = Math.Max(0, _committed.Count - AnchorDepth); k < _committed.Count; k++)
@@ -417,7 +746,7 @@ public sealed class CaptionTracker
         for (int length = keys.Count; length >= 2; length--)
         {
             int start = emittedWords.Count - length;
-            if (emittedCapitalised[start] == topCapitalised && WordsMatch(emittedWords, start, keys, 0, length))
+            if ((emittedCapitalised[start] || !topCapitalised) && WordsMatch(emittedWords, start, keys, 0, length))
             {
                 return visible.GetRange(0, length);
             }
@@ -456,7 +785,8 @@ public sealed class CaptionTracker
 
     /// <summary>
     /// True if <paramref name="count"/> words match from the given positions: the first exactly or as a small
-    /// correction, and at most one in five of the rest different.
+    /// correction, and at most one in five of the rest different. Numbers must be exactly the same: taking "34006"
+    /// for an emitted "34" would drop digits never emitted.
     /// </summary>
     private static bool WordsMatch(IList<string> a, int aStart, IList<string> b, int bStart, int count)
     {
@@ -465,7 +795,12 @@ public sealed class CaptionTracker
         {
             string x = a[aStart + w];
             string y = b[bStart + w];
-            if (!string.Equals(x, y, StringComparison.Ordinal) && !IsSameWord(x, y) && (w == 0 || --allowedMismatches < 0))
+            if (string.Equals(x, y, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (IsNumberWord(x) || IsNumberWord(y) || !IsSameWord(x, y) && (w == 0 || --allowedMismatches < 0))
             {
                 return false;
             }
@@ -515,29 +850,27 @@ public sealed class CaptionTracker
         // Compare words ignoring case and punctuation, which Live Captions often adjusts as it goes.
         string[] pendingWords = _pending.Split(' ');
         string[] pendingKeys = pendingWords.Select(TextSimilarity.Normalize).ToArray();
+
+        // Only the last word of the pending sentence is left (e.g. "today?"). Too little to search for, but if it's
+        // exactly the word the pending sentence ended on, the rest scrolled away.
         string[] firstWords = segments[0].Text.Split(' ');
-        string[] probe = firstWords
+        if (firstWords.Length == 1 && pendingWords.Length > 1 && TrimPunctuation(firstWords[0]).Length > 0
+            && string.Equals(TrimPunctuation(pendingWords[^1]), TrimPunctuation(firstWords[0]), StringComparison.Ordinal))
+        {
+            restored = string.Join(" ", pendingWords, 0, pendingWords.Length - 1) + " " + _text;
+            matchedWords = 1;
+            return true;
+        }
+
+        // Otherwise look for the first few words shown, from the following sentences too: a number read out comes
+        // as sentences of a word or two ("81. 05. 96647.").
+        string[] probe = segments.SelectMany(segment => segment.Text.Split(' '))
             .Select(TextSimilarity.Normalize)
             .Where(word => word.Length > 0)
             .Take(ProbeWords)
             .ToArray();
-        if (probe.Length == 0)
-        {
-            return false;
-        }
-
         if (probe.Length < MinProbeWords)
         {
-            // Only the last word of the pending sentence is left (e.g. "today?"). Too little to search for,
-            // but if it's exactly the word the pending sentence ended on, the rest scrolled away.
-            if (firstWords.Length == 1 && pendingWords.Length > 1
-                && string.Equals(TrimPunctuation(pendingWords[^1]), TrimPunctuation(firstWords[0]), StringComparison.Ordinal))
-            {
-                restored = string.Join(" ", pendingWords, 0, pendingWords.Length - 1) + " " + _text;
-                matchedWords = 1;
-                return true;
-            }
-
             return false;
         }
 

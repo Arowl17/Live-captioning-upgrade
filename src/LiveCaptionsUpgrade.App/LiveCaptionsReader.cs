@@ -43,6 +43,12 @@ internal sealed class LiveCaptionsReader
     // How far past the edge of the desktop the invisible window is parked.
     private const int OffScreenMargin = 200;
 
+    // Least size of the invisible window (unless docked). The bigger it is, the more lines of text Live Captions
+    // keeps, so an address or a card number read out stays in the text until it's finished, rather than scrolling
+    // away while Live Captions is still rewriting it.
+    private const int HiddenMinWidth = 1600;
+    private const int HiddenMinHeight = 700;
+
     // Allowance for the invisible resize borders Windows adds around window rectangles.
     private const int EdgeTolerance = 16;
 
@@ -260,7 +266,10 @@ internal sealed class LiveCaptionsReader
         _hideMethod = leftInvisible ? LiveCaptionsHideMethod.Invisible : LiveCaptionsHideMethod.Minimize;
     }
 
-    /// <summary>Moves a window rectangle that is off every screen (e.g. where it was parked) onto the main screen.</summary>
+    /// <summary>
+    /// Moves a window rectangle that is off every screen (e.g. where it was parked) onto the main screen, no wider
+    /// than it and no taller than a third of it (it may have been left made big for hiding).
+    /// </summary>
     private static NativeMethods.RECT KeepOnScreen(NativeMethods.RECT rect)
     {
         if (NativeMethods.MonitorFromRect(ref rect, NativeMethods.MONITOR_DEFAULTTONULL) != IntPtr.Zero)
@@ -268,8 +277,8 @@ internal sealed class LiveCaptionsReader
             return rect;
         }
 
-        int width = rect.Width;
-        int height = rect.Height;
+        int width = Math.Min(rect.Width, NativeMethods.GetSystemMetrics(NativeMethods.SM_CXSCREEN));
+        int height = Math.Min(rect.Height, NativeMethods.GetSystemMetrics(NativeMethods.SM_CYSCREEN) / 3);
         int left = Math.Max(0, (NativeMethods.GetSystemMetrics(NativeMethods.SM_CXSCREEN) - width) / 2);
         return new NativeMethods.RECT { Left = left, Top = 0, Right = left + width, Bottom = height };
     }
@@ -310,19 +319,22 @@ internal sealed class LiveCaptionsReader
         // ...still shown rather than minimised, so it carries on updating its captions...
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWNOACTIVATE);
 
-        // ...and parked past the bottom-right corner of the desktop for good measure.
+        // ...and parked past the bottom-right corner of the desktop for good measure, made big enough to keep plenty
+        // of text (not when docked, where it sizes itself; Show puts the size back).
         int x = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN)
             + NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN) + OffScreenMargin;
         int y = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN)
             + NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN) + OffScreenMargin;
+        var current = default(NativeMethods.RECT);
+        bool resize = !IsDocked && NativeMethods.GetWindowRect(_hwnd, out current);
         NativeMethods.SetWindowPos(
             _hwnd,
             IntPtr.Zero,
             x,
             y,
-            0,
-            0,
-            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            resize ? Math.Max(current.Width, HiddenMinWidth) : 0,
+            resize ? Math.Max(current.Height, HiddenMinHeight) : 0,
+            (resize ? 0 : NativeMethods.SWP_NOSIZE) | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
     }
 
     private bool IsStillHidden()

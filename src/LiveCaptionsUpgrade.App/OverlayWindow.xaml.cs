@@ -122,12 +122,22 @@ public partial class OverlayWindow : Window
             lines.Add(new CaptionLine(sentence, now));
         }
 
-        ShowLines(lines, update.Pending);
+        ShowLines(lines, update.Pending, update.Replaced);
     }
 
-    /// <summary>Adds finished sentences (with when they were finished) and shows the sentence being spoken.</summary>
-    public void ShowLines(IReadOnlyList<CaptionLine> lines, string pending)
+    /// <summary>
+    /// Adds finished sentences (with when they were finished) and shows the sentence being spoken. The first
+    /// <paramref name="replaced"/> lines shown last are taken away first: Live Captions rewrote them into the new ones.
+    /// </summary>
+    public void ShowLines(IReadOnlyList<CaptionLine> lines, string pending, int replaced = 0)
     {
+        for (int i = Math.Min(replaced, _lines.Count); i > 0; i--)
+        {
+            Captions.Document.Blocks.Remove(_paragraphs[^1]);
+            _lines.RemoveAt(_lines.Count - 1);
+            _paragraphs.RemoveAt(_paragraphs.Count - 1);
+        }
+
         // Lines from another computer can be up to an hour old (it catches this one up after connecting): don't
         // lay out ones that are already past the scroll-back limit only to delete them again.
         var cutoff = DateTimeOffset.Now - TimeSpan.FromMinutes(_settings.ScrollbackMinutes);

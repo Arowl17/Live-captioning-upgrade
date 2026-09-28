@@ -23,6 +23,7 @@ internal static class NativeMethods
     public const uint SWP_NOACTIVATE = 0x0010;
 
     public const int SM_CXSCREEN = 0;
+    public const int SM_CYSCREEN = 1;
     public const int SM_XVIRTUALSCREEN = 76;
     public const int SM_YVIRTUALSCREEN = 77;
     public const int SM_CXVIRTUALSCREEN = 78;

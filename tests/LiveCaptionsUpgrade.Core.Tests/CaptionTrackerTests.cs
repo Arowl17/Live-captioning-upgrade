@@ -15,7 +15,7 @@ public class CaptionTrackerTests
     {
         _now = _now.AddMilliseconds(advanceMs);
         var update = _tracker.Process(text, _now);
-        _emitted.AddRange(update.NewSentences);
+        _emitted.Apply(update);
         return update;
     }
 
@@ -134,7 +134,7 @@ public class CaptionTrackerTests
 
         var flushed = _tracker.Flush();
 
-        Assert.Equal(new[] { "Goodbye every" }, flushed);
+        Assert.Equal(new[] { "Goodbye every" }, flushed.NewSentences);
         Assert.Equal(new[] { "Done here." }, _emitted);
     }
 
@@ -144,7 +144,7 @@ public class CaptionTrackerTests
         Feed("All done.");
         Feed("All done.", advanceMs: 1100);
 
-        Assert.Empty(_tracker.Flush());
+        Assert.Empty(_tracker.Flush().NewSentences);
     }
 
     [Fact]
@@ -305,12 +305,18 @@ public class CaptionTrackerTests
     }
 
     [Fact]
-    public void A_number_at_the_end_of_speech_is_emitted_after_the_pause()
+    public void A_number_at_the_end_of_speech_waits_in_the_live_text_for_what_comes_next()
     {
-        Feed("My zip is 75231.");
-        Feed("My zip is 75231.", advanceMs: 1100);
+        // The customer may only be pausing between groups of digits: the number stays live, however long the pause.
+        Feed("My card is 4111 1111.");
+        var live = Feed("My card is 4111 1111.", advanceMs: 5000);
+        Assert.Empty(_emitted);
+        Assert.Equal("My card is 4111 1111.", live.Pending);
 
-        Assert.Equal(new[] { "My zip is 75231." }, _emitted);
+        Feed("My card is 4111 1111 2222 3333. Expiry");
+        Assert.Equal(new[] { "My card is 4111 1111 2222 3333." }, _emitted);
+        _emitted.Apply(_tracker.Flush());
+        Assert.Equal(new[] { "My card is 4111 1111 2222 3333.", "Expiry" }, _emitted);
     }
 
     [Fact]

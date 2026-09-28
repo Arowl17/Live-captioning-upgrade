@@ -45,15 +45,20 @@ words are appended, recent words get corrected, and old lines scroll off the top
   becoming "I called yesterday, and they said no."), only the new words are added ("and they said no.").
 - Reading out an address or a number (phone, card, zip code), Live Captions splits it into pieces and keeps
   rewriting it: "Seven." "Seven, seven." "7750.", or "Riverside, Texas seven." becoming "Riverside TX 75231 in the
-  main." While a number is still being read out, it stays in the live text, and it goes into the history once, in
-  its final form, when something other than a number follows (or after a pause). If a sentence was already shown
-  when Live Captions rewrites it, the rewritten one is shown once, and the sentences around it aren't shown again.
+  main." While a number is still being read out (including pauses between groups of digits), it stays in the live
+  text, and it goes into the history once, in its final form, when something other than a number follows.
+  If it gets too long to wait for (the start would scroll out of Live Captions' text), its first part goes into
+  the history, and when Live Captions rewrites it, the whole number **replaces** that part, on the other computer
+  too. A line is only ever replaced by one that has all its digits, so no digit can go missing.
 - "Mr. Smith", "John A. Smith" and "3 p.m. today" don't split sentences.
 
 These rules are checked by a simulation test that replays thousands of calls the way Live Captions shows
 them (words arriving in bursts, corrections, late punctuation, merged sentences, sentences ended too soon and
 rewritten, numbers read out digit by digit, text briefly going blank, old lines scrolling away) and verifies that every word comes out exactly
-once, or for rewritten sentences, that nothing is lost or shown again.
+once, or for rewritten sentences, that nothing is lost or shown again. A second one replays calls full of card
+and phone numbers, zip codes and addresses read out digit by digit (with "oh" for zero, pauses between groups,
+"(330) 612-7750"), in Live Captions windows of different sizes, and checks that the history ends up with every
+digit said, once, in order.
 
 ## Requirements
 
@@ -96,10 +101,12 @@ Live Captions is not minimised, because a minimised window might stop updating i
 
 - made fully transparent and click-through,
 - moved past the edge of the desktop,
+- made at least 1600 × 700 pixels (unless docked), so it keeps more lines of text: an address or card number
+  then stays in its text until it has been read out in full,
 - removed from the taskbar and Alt+Tab.
 
 The app checks this every poll and re-applies it if Live Captions undoes it. When you exit, the Live Captions
-window is put back exactly where it was.
+window is put back exactly where it was, at the size it was.
 
 If captions ever stop updating while Live Captions is hidden, go to **Settings → Windows Live Captions →
 How to hide it** and choose **Minimize**.
@@ -231,7 +238,8 @@ machine, including a connection that goes silent and one that sends garbage.
   `CaptionsTextBlock`). A future Windows update could rename them; the constants are at the top of
   `LiveCaptionsReader.cs`.
 - If Live Captions rewrites a sentence heavily *after* it was saved (more than a word or two), the transcript
-  can contain both versions.
+  can contain both versions. (The transcript file is only ever added to: a number that replaces its first part
+  in the caption window appears in the transcript after that part.)
 - If this app is force-closed (e.g. from Task Manager), Live Captions stays invisible until you start
   this app again, which picks it up and gives it back when you exit normally. Or press **Win + Ctrl + L**
   twice to close and reopen Live Captions.

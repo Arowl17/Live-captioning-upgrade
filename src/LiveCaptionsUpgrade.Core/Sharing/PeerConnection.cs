@@ -19,7 +19,9 @@ public sealed class PeerConnection : IAsyncDisposable
     private readonly FramedConnection _connection;
     private readonly Channel<ControlMessage> _outgoing = Channel.CreateUnbounded<ControlMessage>(new UnboundedChannelOptions { SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
+    private readonly TaskCompletionSource _running = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task _writer = Task.CompletedTask;
+    private Task _reader = Task.CompletedTask;
     private long _lastReceiveMs;
     private int _closed;
 
@@ -70,7 +72,9 @@ public sealed class PeerConnection : IAsyncDisposable
         {
             _writer = WriteLoopAsync(token);
             var heartbeat = HeartbeatLoopAsync(token);
-            await ReadLoopAsync(token).ConfigureAwait(false);
+            _reader = ReadLoopAsync(token);
+            _running.TrySetResult();
+            await _reader.ConfigureAwait(false);
             linked.Cancel();
             await Task.WhenAll(_writer, heartbeat).ConfigureAwait(false);
         }
@@ -83,6 +87,7 @@ public sealed class PeerConnection : IAsyncDisposable
         }
         finally
         {
+            _running.TrySetResult();
             await CloseAsync().ConfigureAwait(false);
         }
     }
@@ -192,9 +197,17 @@ public sealed class PeerConnection : IAsyncDisposable
     /// <summary>Sends what's still queued (waiting at most <paramref name="timeout"/>), then closes.</summary>
     public async Task CloseGracefullyAsync(TimeSpan timeout)
     {
-        if (_outgoing.Writer.TryComplete())
+        // (A connection that has only just come up may not be running yet: then wait for it to start.)
+        var deadline = Task.Delay(timeout);
+        if (_outgoing.Writer.TryComplete()
+            && await Task.WhenAny(_running.Task, deadline).ConfigureAwait(false) == _running.Task
+            && await Task.WhenAny(_writer, deadline).ConfigureAwait(false) == _writer)
         {
-            await Task.WhenAny(_writer, Task.Delay(timeout)).ConfigureAwait(false);
+            // Everything went out. Say that's all, and let the other computer hang up once it has read it: closing
+            // with its messages (a heartbeat, say) still unread here would reset the connection, and a reset can
+            // make it throw away what it received but hadn't read yet, such as those last sentences.
+            await _connection.ShutdownSendAsync().ConfigureAwait(false);
+            await Task.WhenAny(_reader, deadline).ConfigureAwait(false);
         }
 
         await CloseAsync().ConfigureAwait(false);

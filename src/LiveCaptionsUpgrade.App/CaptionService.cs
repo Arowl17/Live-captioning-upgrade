@@ -75,7 +75,7 @@ internal sealed class CaptionService
             _loop = null;
         }
 
-        Publish(new CaptionUpdate(_tracker.Flush(), string.Empty, TextChanged: true));
+        Publish(_tracker.Flush());
         _reader.Show();
     }
 
@@ -95,8 +95,7 @@ internal sealed class CaptionService
                     {
                         // Live Captions closed or crashed: keep what was being said rather than lose it.
                         _wasAttached = false;
-                        var flushed = _tracker.Flush();
-                        Publish(new CaptionUpdate(flushed, string.Empty, TextChanged: true));
+                        Publish(_tracker.Flush());
                     }
 
                     SetStatus("Connecting to Windows Live Captions…");
