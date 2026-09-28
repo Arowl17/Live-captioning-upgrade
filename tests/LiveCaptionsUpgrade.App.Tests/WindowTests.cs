@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Windows;
@@ -19,6 +20,17 @@ public class WindowTests
     public void Every_window_opens_and_works_with_captions_and_settings()
     {
         int liveCaptionsBefore = CountLiveCaptions();
+        var startedAfter = new List<string>();
+        void Check(string step)
+        {
+            DoEvents();
+            Thread.Sleep(1500);
+            if (CountLiveCaptions() > liveCaptionsBefore + startedAfter.Count)
+            {
+                startedAfter.Add(step);
+            }
+        }
+
         RunOnUiThread(() =>
         {
             var app = new global::LiveCaptionsUpgrade.App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
@@ -27,9 +39,12 @@ public class WindowTests
             try
             {
                 var settings = new AppSettings { WindowLeft = 100, WindowTop = 100 };
+                Check("creating the app");
 
                 var overlay = new OverlayWindow(settings);
+                Check("creating the caption bar");
                 overlay.Show();
+                Check("showing the caption bar");
                 overlay.ShowUpdate(new CaptionUpdate(new[] { "Hello, this is Anna from billing." }, "How can I", true));
                 overlay.ShowLines(new[]
                 {
@@ -37,28 +52,29 @@ public class WindowTests
                     new CaptionLine("Too old to keep.", DateTimeOffset.Now.AddHours(-1)),
                 }, "help");
                 overlay.ShowStatus("Waiting for LAPTOP…");
-                DoEvents();
+                Check("showing captions");
                 Assert.False(overlay.HasSelection);
                 overlay.ApplySettings(settings);
                 overlay.StoreBounds();
                 overlay.Hide();
                 overlay.Show();
-                DoEvents();
+                Check("hiding and showing the caption bar");
 
                 var settingsWindow = new SettingsWindow(settings, app, sharing);
                 settingsWindow.Show();
-                DoEvents();
+                Check("showing settings");
                 settingsWindow.ReflectQuickToggles(new AppSettings { CaptionSharing = CaptionSharingMode.Receive });
-                DoEvents();
+                Check("switching settings to show mode");
                 settingsWindow.Close();
 
                 sharing.SetModeAsync(CaptionSharingMode.Receive).GetAwaiter().GetResult();
                 var pairing = new PairingWindow(sharing);
                 pairing.Show();
-                DoEvents();
+                Check("showing the pairing window");
                 pairing.Close();
 
                 overlay.Close();
+                Check("closing");
             }
             finally
             {
@@ -71,8 +87,7 @@ public class WindowTests
         });
 
         // Only reading captions may start Live Captions; opening windows or showing shared captions must not.
-        Thread.Sleep(2000);
-        Assert.Equal(liveCaptionsBefore, CountLiveCaptions());
+        Assert.True(startedAfter.Count == 0, "Live Captions started after: " + string.Join(", ", startedAfter));
     }
 
     private static int CountLiveCaptions()
