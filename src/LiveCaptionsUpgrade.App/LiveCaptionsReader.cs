@@ -35,6 +35,10 @@ internal sealed class LiveCaptionsReader
     // Searching the UI Automation tree is relatively slow, so don't retry on every poll. Still frequent
     // enough that a freshly started Live Captions is hidden soon after its caption area appears.
     private static readonly TimeSpan CaptionsSearchInterval = TimeSpan.FromMilliseconds(300);
+
+    // Each search walks Live Captions' whole UI from another process, so while the caption text can't be found
+    // (a setup screen, Live Captions rebuilding its UI) the searches get further apart, up to this.
+    private static readonly TimeSpan MaxCaptionsSearchInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan LaunchTimeout = TimeSpan.FromSeconds(10);
 
     // Don't fight Live Captions more than this often if it keeps undoing the hiding.
@@ -43,11 +47,11 @@ internal sealed class LiveCaptionsReader
     // How far past the edge of the desktop the invisible window is parked.
     private const int OffScreenMargin = 200;
 
-    // Least size of the invisible window (unless docked). The bigger it is, the more lines of text Live Captions
-    // keeps, so an address or a card number read out stays in the text until it's finished, rather than scrolling
-    // away while Live Captions is still rewriting it.
-    private const int HiddenMinWidth = 1600;
-    private const int HiddenMinHeight = 700;
+    // The size the previous version gave the hidden window, and the ordinary size to give it back instead.
+    private const int LeftBigWidth = 1600;
+    private const int LeftBigHeight = 700;
+    private const int OrdinaryWidth = 1000;
+    private const int OrdinaryHeight = 250;
 
     // Allowance for the invisible resize borders Windows adds around window rectangles.
     private const int EdgeTolerance = 16;
@@ -60,6 +64,7 @@ internal sealed class LiveCaptionsReader
     private AutomationElement? _window;
     private AutomationElement? _captions;
     private DateTime _lastCaptionsSearch = DateTime.MinValue;
+    private TimeSpan _captionsSearchInterval = CaptionsSearchInterval;
     private SavedWindowState? _saved;
     private LiveCaptionsHideMethod _hideMethod;
     private DateTime _lastHide = DateTime.MinValue;
@@ -130,6 +135,7 @@ internal sealed class LiveCaptionsReader
             _window = window;
             _captions = null;
             _lastCaptionsSearch = DateTime.MinValue;
+            _captionsSearchInterval = CaptionsSearchInterval;
             _saved = null;
             IsDocked = false;
             AdoptLeftoverHiddenState();
@@ -150,7 +156,7 @@ internal sealed class LiveCaptionsReader
         {
             if (_captions is null)
             {
-                if (DateTime.UtcNow - _lastCaptionsSearch < CaptionsSearchInterval)
+                if (DateTime.UtcNow - _lastCaptionsSearch < _captionsSearchInterval)
                 {
                     return null;
                 }
@@ -161,8 +167,11 @@ internal sealed class LiveCaptionsReader
                     new PropertyCondition(AutomationElement.AutomationIdProperty, CaptionsAutomationId));
                 if (_captions is null)
                 {
+                    _captionsSearchInterval = TimeSpan.FromTicks(Math.Min(_captionsSearchInterval.Ticks * 2, MaxCaptionsSearchInterval.Ticks));
                     return null;
                 }
+
+                _captionsSearchInterval = CaptionsSearchInterval;
             }
 
             return _captions.Current.Name ?? string.Empty;
@@ -189,12 +198,13 @@ internal sealed class LiveCaptionsReader
             }
 
             int exStyle = NativeMethods.GetWindowLong(_hwnd, NativeMethods.GWL_EXSTYLE);
+            IsDocked = IsDockedToScreenEdge();
+            ShrinkIfLeftBig();
             var placement = NativeMethods.WINDOWPLACEMENT.Create();
             NativeMethods.GetWindowPlacement(_hwnd, ref placement);
 
             _saved = new SavedWindowState(exStyle, GetAlpha(exStyle), placement);
             _hideMethod = method;
-            IsDocked = IsDockedToScreenEdge();
             ApplyHidden();
         }
     }
@@ -267,6 +277,28 @@ internal sealed class LiveCaptionsReader
     }
 
     /// <summary>
+    /// The previous version made the hidden window at least 1600 × 700, which slowed the computer down. If Live
+    /// Captions kept that size (e.g. the computer was shut down while it was hidden), give it an ordinary one.
+    /// </summary>
+    private void ShrinkIfLeftBig()
+    {
+        if (IsDocked || NativeMethods.IsIconic(_hwnd) || !NativeMethods.GetWindowRect(_hwnd, out var rect)
+            || rect.Width < LeftBigWidth || rect.Height < LeftBigHeight)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowPos(
+            _hwnd,
+            IntPtr.Zero,
+            0,
+            0,
+            OrdinaryWidth,
+            OrdinaryHeight,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+    }
+
+    /// <summary>
     /// Moves a window rectangle that is off every screen (e.g. where it was parked) onto the main screen, no wider
     /// than it and no taller than a third of it (it may have been left made big for hiding).
     /// </summary>
@@ -319,22 +351,21 @@ internal sealed class LiveCaptionsReader
         // ...still shown rather than minimised, so it carries on updating its captions...
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWNOACTIVATE);
 
-        // ...and parked past the bottom-right corner of the desktop for good measure, made big enough to keep plenty
-        // of text (not when docked, where it sizes itself; Show puts the size back).
+        // ...and parked past the bottom-right corner of the desktop for good measure, at the size it has. (Not made
+        // bigger to keep more text: Live Captions redraws its whole window as the text moves, and a transparent
+        // window has to be copied by Windows every time it does, so a big one slowed down the whole computer.)
         int x = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN)
             + NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN) + OffScreenMargin;
         int y = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN)
             + NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN) + OffScreenMargin;
-        var current = default(NativeMethods.RECT);
-        bool resize = !IsDocked && NativeMethods.GetWindowRect(_hwnd, out current);
         NativeMethods.SetWindowPos(
             _hwnd,
             IntPtr.Zero,
             x,
             y,
-            resize ? Math.Max(current.Width, HiddenMinWidth) : 0,
-            resize ? Math.Max(current.Height, HiddenMinHeight) : 0,
-            (resize ? 0 : NativeMethods.SWP_NOSIZE) | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            0,
+            0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
     }
 
     private bool IsStillHidden()

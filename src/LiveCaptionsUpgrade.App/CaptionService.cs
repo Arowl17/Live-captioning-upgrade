@@ -16,6 +16,11 @@ internal sealed class CaptionService
     // If the caption text hasn't appeared by now, Live Captions is probably showing its first-run setup.
     private static readonly TimeSpan SetupHintDelay = TimeSpan.FromSeconds(5);
 
+    // Each read asks Live Captions (another process) for its text. Once the text has stopped changing for a
+    // while (nobody talking, between calls), read it less often; as soon as it changes, go back to the full rate.
+    private static readonly TimeSpan QuietAfter = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan QuietPollInterval = TimeSpan.FromMilliseconds(400);
+
     private readonly LiveCaptionsReader _reader = new();
     private readonly CaptionTracker _tracker;
     private readonly TranscriptRecorder _transcript;
@@ -30,6 +35,7 @@ internal sealed class CaptionService
     private bool _dockedNoticeShown;
     private string? _status;
     private string _lastPending = string.Empty;
+    private DateTime _lastTextChange;
 
     public CaptionService(AppSettings settings, TranscriptRecorder transcript)
     {
@@ -124,10 +130,17 @@ internal sealed class CaptionService
                         SetStatus(null);
                     }
 
-                    Publish(_tracker.Process(text, DateTimeOffset.Now));
+                    var update = _tracker.Process(text, DateTimeOffset.Now);
+                    if (update.TextChanged)
+                    {
+                        _lastTextChange = DateTime.UtcNow;
+                    }
+
+                    Publish(update);
                 }
 
-                await Task.Delay(interval, ct);
+                bool quiet = DateTime.UtcNow - _lastTextChange > QuietAfter;
+                await Task.Delay(quiet && QuietPollInterval > interval ? QuietPollInterval : interval, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

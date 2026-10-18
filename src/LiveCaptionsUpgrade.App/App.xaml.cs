@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,11 +36,8 @@ public partial class App : Application
     private string? _liveCaptionsStatus;
 
     // Captions from the other computer waiting to be shown; several network messages are shown in one go.
-    private readonly object _receivedLock = new();
-    private List<CaptionLine> _receivedLines = new();
-    private string _receivedPending = string.Empty;
-    private int _receivedReplaced;
-    private bool _receivedScheduled;
+    private readonly CaptionBatch _localCaptions = new();
+    private readonly CaptionBatch _receivedCaptions = new();
     private bool _cleanedUp;
 
     private static string AppVersion { get; } =
@@ -187,10 +185,28 @@ public partial class App : Application
         Shutdown();
     }
 
+    /// <summary>
+    /// Runs below normal priority: when a game (or anything else) needs the processor, it gets it first. This app
+    /// needs little, and only now and then, so captions don't fall behind.
+    /// </summary>
+    private static void LowerPriority()
+    {
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException)
+        {
+            Log.Warn("Couldn't lower the priority: " + ex.Message);
+        }
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         DispatcherUnhandledException += OnDispatcherUnhandledException;
+        LowerPriority();
         AppDomain.CurrentDomain.UnhandledException += (_, _) =>
         {
             // The process is going down (error on another thread): at least don't leave Live Captions invisible.
@@ -374,7 +390,13 @@ public partial class App : Application
         {
             // Recorded for the other computer even while not sending, so it gets the recent text when sharing starts.
             _sharing?.Publish(update);
-            Dispatcher.InvokeAsync(() => _overlay?.ShowUpdate(update));
+            var now = DateTimeOffset.Now;
+            var lines = update.NewSentences.Select(sentence => new CaptionLine(sentence, now)).ToList();
+            if (_localCaptions.Add(lines, update.Pending, update.Replaced))
+            {
+                // Below input and drawing, so captions never hold up the mouse or the screen.
+                Dispatcher.InvokeAsync(ShowLocalCaptions, DispatcherPriority.Background);
+            }
         };
         service.StatusChanged += status =>
         {
@@ -417,41 +439,21 @@ public partial class App : Application
     {
         _transcript?.Write(lines);
 
-        // Messages can arrive faster than a slow computer redraws: collect them and show them in one go. Lines
-        // replaced are taken back from those collected, or else from those already shown.
-        lock (_receivedLock)
+        if (_receivedCaptions.Add(lines, pending, replaced))
         {
-            int collected = Math.Min(replaced, _receivedLines.Count);
-            _receivedLines.RemoveRange(_receivedLines.Count - collected, collected);
-            _receivedReplaced += replaced - collected;
-            _receivedLines.AddRange(lines);
-            _receivedPending = pending;
-            if (_receivedScheduled)
-            {
-                return;
-            }
-
-            _receivedScheduled = true;
+            Dispatcher.InvokeAsync(ShowReceivedCaptions, DispatcherPriority.Background);
         }
+    }
 
-        Dispatcher.InvokeAsync(ShowReceivedCaptions);
+    private void ShowLocalCaptions()
+    {
+        var (lines, pending, replaced) = _localCaptions.Take();
+        _overlay?.ShowLines(lines, pending, replaced);
     }
 
     private void ShowReceivedCaptions()
     {
-        List<CaptionLine> lines;
-        string pending;
-        int replaced;
-        lock (_receivedLock)
-        {
-            lines = _receivedLines;
-            pending = _receivedPending;
-            replaced = _receivedReplaced;
-            _receivedLines = new List<CaptionLine>();
-            _receivedReplaced = 0;
-            _receivedScheduled = false;
-        }
-
+        var (lines, pending, replaced) = _receivedCaptions.Take();
         if (_activeSharing == CaptionSharingMode.Receive || _sharing?.Mode == CaptionSharingMode.Receive)
         {
             _overlay?.ShowLines(lines, pending, replaced);

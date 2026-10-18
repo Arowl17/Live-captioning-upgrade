@@ -101,12 +101,28 @@ Live Captions is not minimised, because a minimised window might stop updating i
 
 - made fully transparent and click-through,
 - moved past the edge of the desktop,
-- made at least 1600 × 700 pixels (unless docked), so it keeps more lines of text: an address or card number
-  then stays in its text until it has been read out in full,
 - removed from the taskbar and Alt+Tab.
 
 The app checks this every poll and re-applies it if Live Captions undoes it. When you exit, the Live Captions
 window is put back exactly where it was, at the size it was.
+
+### Keeping the computer responsive
+
+The app is meant to go unnoticed, also while gaming:
+
+- It runs below normal priority, so anything else that needs the processor gets it first.
+- It reads Live Captions' text about 7 times a second while it changes, and 2–3 times a second once it has
+  been still for a few seconds (nobody talking, between calls).
+- Live Captions' hidden window keeps its own size. (Making it bigger, as one version did to keep more text,
+  slowed the whole computer down: Windows has to copy a transparent window every time Live Captions redraws
+  it. Such a window is shrunk back when hiding.)
+- Caption changes are shown in batches, after mouse and keyboard input, and not at all while the caption bar is
+  hidden (they're shown when it's shown again).
+- Searching Live Captions' window for the caption text (only needed while it isn't captioning yet) slows down
+  to once every 3 seconds if it keeps failing.
+
+A caption bar on top of a full-screen game still costs the game a little, as any overlay does: hide it with the
+shortcut while playing.
 
 If captions ever stop updating while Live Captions is hidden, go to **Settings → Windows Live Captions →
 How to hide it** and choose **Minimize**.

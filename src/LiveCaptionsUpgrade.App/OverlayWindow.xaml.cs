@@ -35,6 +35,13 @@ public partial class OverlayWindow : Window
     private readonly Paragraph _liveParagraph;
     private bool _liveShown;
 
+    // While hidden (e.g. on the computer sending captions to another one), nothing is drawn, but changing the
+    // caption text would still have it laid out again several times a second. What arrives is kept here instead,
+    // and shown in one go when the window is shown.
+    private readonly List<CaptionLine> _hiddenLines = new();
+    private string _hiddenPending = string.Empty;
+    private int _hiddenReplaced;
+
     private readonly DispatcherTimer _pruneTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _noteTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
     private AppSettings _settings;
@@ -85,6 +92,7 @@ public partial class OverlayWindow : Window
         {
             if (e.NewValue is true)
             {
+                ShowHiddenUpdates();
                 GoLive();
             }
         };
@@ -113,24 +121,18 @@ public partial class OverlayWindow : Window
 
     private bool IsAtBottom => Captions.VerticalOffset >= Captions.ExtentHeight - Captions.ViewportHeight - 2;
 
-    public void ShowUpdate(CaptionUpdate update)
-    {
-        var now = DateTimeOffset.Now;
-        var lines = new List<CaptionLine>(update.NewSentences.Count);
-        foreach (string sentence in update.NewSentences)
-        {
-            lines.Add(new CaptionLine(sentence, now));
-        }
-
-        ShowLines(lines, update.Pending, update.Replaced);
-    }
-
     /// <summary>
     /// Adds finished sentences (with when they were finished) and shows the sentence being spoken. The first
     /// <paramref name="replaced"/> lines shown last are taken away first: Live Captions rewrote them into the new ones.
     /// </summary>
     public void ShowLines(IReadOnlyList<CaptionLine> lines, string pending, int replaced = 0)
     {
+        if (!IsVisible)
+        {
+            KeepForLater(lines, pending, replaced);
+            return;
+        }
+
         for (int i = Math.Min(replaced, _lines.Count); i > 0; i--)
         {
             Captions.Document.Blocks.Remove(_paragraphs[^1]);
@@ -165,6 +167,27 @@ public partial class OverlayWindow : Window
         SetLiveText(pending);
         PruneOldLines();
         RefreshStatus();
+    }
+
+    private void KeepForLater(IReadOnlyList<CaptionLine> lines, string pending, int replaced)
+    {
+        int kept = Math.Min(replaced, _hiddenLines.Count);
+        _hiddenLines.RemoveRange(_hiddenLines.Count - kept, kept);
+        _hiddenReplaced += replaced - kept;
+        _hiddenLines.AddRange(lines);
+        _hiddenPending = pending;
+
+        int expired = Scrollback.CountExpired(_hiddenLines, DateTimeOffset.Now, TimeSpan.FromMinutes(_settings.ScrollbackMinutes));
+        _hiddenLines.RemoveRange(0, expired);
+    }
+
+    private void ShowHiddenUpdates()
+    {
+        var lines = _hiddenLines.ToArray();
+        int replaced = _hiddenReplaced;
+        _hiddenLines.Clear();
+        _hiddenReplaced = 0;
+        ShowLines(lines, _hiddenPending, replaced);
     }
 
     public void ShowStatus(string? status)
