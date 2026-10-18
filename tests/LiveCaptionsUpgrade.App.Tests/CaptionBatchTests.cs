@@ -13,20 +13,21 @@ public class CaptionBatchTests
     public void Changes_are_collected_until_taken_and_replacements_apply_to_them_first()
     {
         var batch = new global::LiveCaptionsUpgrade.CaptionBatch();
-        Assert.True(batch.Add(new[] { Line("Card number?"), Line("Three, zero.") }, "Th", 0));
-        Assert.False(batch.Add(new[] { Line("3032 5817.") }, string.Empty, 1));
-
-        // One line it replaces was collected; the other was shown before.
-        Assert.False(batch.Add(new[] { Line("3032 5817 4802 8929.") }, "Expiry", 2));
+        Assert.True(batch.Add(new[] { Line("Card number?"), Line("Three.") }, "Ze", 0));
+        Assert.False(batch.Add(new[] { Line("30.") }, string.Empty, 1));
 
         var (lines, pending, replaced) = batch.Take();
-        Assert.Equal(new[] { "Card number?", "3032 5817 4802 8929." }, lines.Select(l => l.Text));
-        Assert.Equal("Expiry", pending);
+        Assert.Equal(new[] { "Card number?", "30." }, lines.Select(l => l.Text));
+        Assert.Equal(string.Empty, pending);
         Assert.Equal(0, replaced);
 
-        Assert.True(batch.Add(new[] { Line("Yes.") }, string.Empty, 3));
-        (lines, _, replaced) = batch.Take();
-        Assert.Equal(new[] { "Yes." }, lines.Select(l => l.Text));
-        Assert.Equal(2, replaced);
+        // Of the lines the full number replaces, one is still waiting to be shown; the other was shown already.
+        Assert.True(batch.Add(new[] { Line("Two.") }, "Fi", 0));
+        Assert.False(batch.Add(new[] { Line("3032 5817 4802 8929.") }, "Expiry", 2));
+
+        (lines, pending, replaced) = batch.Take();
+        Assert.Equal(new[] { "3032 5817 4802 8929." }, lines.Select(l => l.Text));
+        Assert.Equal("Expiry", pending);
+        Assert.Equal(1, replaced);
     }
 }
