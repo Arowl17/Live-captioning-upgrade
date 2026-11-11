@@ -97,14 +97,18 @@ appear. Until then, for example while Live Captions shows its first-run setup, i
 
 ### How Live Captions is hidden
 
-Live Captions is not minimised, because a minimised window might stop updating its captions. Instead it stays open and is:
+Live Captions is **minimised** and taken off the taskbar and out of Alt+Tab. Minimised, it carries on captioning
+and its text can still be read, but Windows doesn't draw the window at all, so hiding it costs nothing.
 
-- made fully transparent and click-through,
-- moved past the edge of the desktop,
-- removed from the taskbar and Alt+Tab.
+The other way (**Settings → Windows Live Captions → How to hide it → Transparent**) keeps the window open but
+fully transparent, click-through and parked past the edge of the desktop. It was the default in earlier versions,
+and it slowed the computer down: Windows still has to draw a transparent window whenever its content changes,
+which Live Captions' does all the time, and that takes time away from games. It's only there in case Live
+Captions ever stops captioning while minimised. Settings saved by those versions are moved over to minimising.
 
-The app checks this every poll and re-applies it if Live Captions undoes it. When you exit, the Live Captions
-window is put back exactly where it was, at the size it was.
+The app checks on every poll that Live Captions is still hidden, and hides it again if not, waiting longer each
+time if Live Captions keeps undoing it. When you exit, the Live Captions window is put back exactly where it was,
+at the size it was.
 
 ### Keeping the computer responsive
 
@@ -113,9 +117,10 @@ The app is meant to go unnoticed, also while gaming:
 - It runs below normal priority, so anything else that needs the processor gets it first.
 - It reads Live Captions' text about 7 times a second while it changes, and 2–3 times a second once it has
   been still for a few seconds (nobody talking, between calls).
-- Live Captions' hidden window keeps its own size. (Making it bigger, as one version did to keep more text,
-  slowed the whole computer down: Windows has to copy a transparent window every time Live Captions redraws
-  it. Such a window is shrunk back when hiding.)
+- Live Captions is hidden by minimising it, which Windows doesn't draw (see above). Its window keeps its own
+  size; one that an earlier version made bigger is shrunk back.
+- However much text Live Captions holds, only the last 4000 characters are looked at, and nothing is worked out
+  when the text is the same as at the last read.
 - Caption changes are shown in batches, after mouse and keyboard input, and not at all while the caption bar is
   hidden (they're shown when it's shown again).
 - Searching Live Captions' window for the caption text (only needed while it isn't captioning yet) slows down
@@ -124,8 +129,12 @@ The app is meant to go unnoticed, also while gaming:
 A caption bar on top of a full-screen game still costs the game a little, as any overlay does: hide it with the
 shortcut while playing.
 
+Every 5 minutes the app writes a line to its log (**tray icon → Open log folder**, `app.log`) saying how much
+processor time it and Live Captions used, how long reading the captions took, and how often Live Captions had
+to be hidden again. If the computer feels slow with the app running, that line says where to look.
+
 If captions ever stop updating while Live Captions is hidden, go to **Settings → Windows Live Captions →
-How to hide it** and choose **Minimize**.
+How to hide it** and choose **Transparent**.
 
 ## Using it
 
@@ -204,7 +213,7 @@ folder. A log for troubleshooting is in `%LOCALAPPDATA%\LiveCaptionsUpgrade\logs
 | `AlwaysOnTop` | `true` | Keep the captions above other windows |
 | `ClickThrough` | `false` | Overlay locked, clicks pass through |
 | `HideLiveCaptionsWindow` | `true` | Hide the original Live Captions window while running |
-| `HideMethod` | `Invisible` | `Invisible` (transparent and off screen, keeps running) or `Minimize` (fallback) |
+| `HideMethod` | `Minimize` | `Minimize` (costs nothing) or `Invisible` (transparent and off screen: only if captions stop while minimised) |
 | `CaptionSharing` | `Off` | `Off`, `Send` (to the paired computer) or `Receive` (show the paired computer's captions) |
 | `SaveTranscript` | `true` | Write finished sentences to a transcript file |
 | `TranscriptFolder` | *(empty)* | Transcript location. Empty means `Documents\LiveCaptionsUpgrade\Transcripts`. `%VARIABLES%` are expanded. |

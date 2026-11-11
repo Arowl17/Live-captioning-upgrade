@@ -6,10 +6,13 @@ namespace LiveCaptionsUpgrade.Core;
 /// <summary>How the original Live Captions window is kept off screen.</summary>
 public enum LiveCaptionsHideMethod
 {
-    /// <summary>Keep it open but fully transparent, click-through and parked off screen, so it keeps captioning.</summary>
+    /// <summary>
+    /// Keep it open but fully transparent, click-through and parked off screen. Windows still has to draw a
+    /// transparent window, which can slow games down; only for when Live Captions stops captioning while minimised.
+    /// </summary>
     Invisible,
 
-    /// <summary>Minimise it. Fallback in case a Windows update stops <see cref="Invisible"/> from working.</summary>
+    /// <summary>Minimise it (the default): Windows doesn't draw a minimised window at all, and it keeps captioning.</summary>
     Minimize,
 }
 
@@ -29,6 +32,9 @@ public enum CaptionSharingMode
 /// <summary>User settings, stored as JSON in %APPDATA%\LiveCaptionsUpgrade\settings.json.</summary>
 public sealed class AppSettings
 {
+    /// <summary>Settings saved by a version from before <see cref="SettingsVersion"/> existed count as version 0.</summary>
+    public const int CurrentVersion = 2;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -46,7 +52,10 @@ public sealed class AppSettings
     /// <summary>Hide the original Live Captions window while this app runs, so only this app's captions are on screen.</summary>
     public bool HideLiveCaptionsWindow { get; set; } = true;
 
-    public LiveCaptionsHideMethod HideMethod { get; set; } = LiveCaptionsHideMethod.Invisible;
+    public LiveCaptionsHideMethod HideMethod { get; set; } = LiveCaptionsHideMethod.Minimize;
+
+    /// <summary>Which version of the settings this is, so that a newer app can bring older ones up to date.</summary>
+    public int SettingsVersion { get; set; }
 
     public bool SaveTranscript { get; set; } = true;
 
@@ -113,6 +122,7 @@ public sealed class AppSettings
         }
 
         settings.Normalize();
+        settings.Upgrade();
         return settings;
     }
 
@@ -130,6 +140,19 @@ public sealed class AppSettings
         File.Move(temporary, path, overwrite: true);
     }
 
+    /// <summary>Brings settings saved by an older version up to date.</summary>
+    private void Upgrade()
+    {
+        // Before version 2, Live Captions was hidden as a transparent window by default, which turned out to slow
+        // the computer down. Minimising it is the default now; move everyone over (it can be chosen again).
+        if (SettingsVersion < 2)
+        {
+            HideMethod = LiveCaptionsHideMethod.Minimize;
+        }
+
+        SettingsVersion = CurrentVersion;
+    }
+
     /// <summary>Clamps hand-edited values into sensible ranges.</summary>
     public void Normalize()
     {
@@ -145,7 +168,7 @@ public sealed class AppSettings
         HistoryTextColor = string.IsNullOrWhiteSpace(HistoryTextColor) ? "#B8B8B8" : HistoryTextColor;
         BackgroundColor = string.IsNullOrWhiteSpace(BackgroundColor) ? "#000000" : BackgroundColor;
         TranscriptFolder ??= string.Empty;
-        HideMethod = Enum.IsDefined(HideMethod) ? HideMethod : LiveCaptionsHideMethod.Invisible;
+        HideMethod = Enum.IsDefined(HideMethod) ? HideMethod : LiveCaptionsHideMethod.Minimize;
         CaptionSharing = Enum.IsDefined(CaptionSharing) ? CaptionSharing : CaptionSharingMode.Off;
         ToggleHotkey = Hotkey.TryParse(ToggleHotkey, out var hotkey) ? hotkey.ToString() : string.Empty;
     }

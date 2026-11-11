@@ -130,14 +130,32 @@ public sealed class TranscriptAndSettingsTests : IDisposable
     }
 
     [Fact]
-    public void Hide_method_defaults_to_invisible_and_is_stored_by_name()
+    public void Hide_method_defaults_to_minimize_and_is_stored_by_name()
     {
         string path = Path.Combine(_dir, "hide.json");
+        var settings = AppSettings.Load(path);
+        Assert.Equal(LiveCaptionsHideMethod.Minimize, settings.HideMethod);
+
+        // Chosen in this version, the transparent window is kept.
+        settings.HideMethod = LiveCaptionsHideMethod.Invisible;
+        settings.Save(path);
+
+        Assert.Contains("\"HideMethod\": \"Invisible\"", File.ReadAllText(path));
         Assert.Equal(LiveCaptionsHideMethod.Invisible, AppSettings.Load(path).HideMethod);
+    }
 
-        new AppSettings { HideMethod = LiveCaptionsHideMethod.Minimize }.Save(path);
+    [Fact]
+    public void Settings_from_before_minimizing_was_the_default_are_moved_over_to_it()
+    {
+        // As an earlier version saved them: the transparent window (which slowed the computer down), no version.
+        string path = Path.Combine(_dir, "old.json");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(path, "{ \"HideMethod\": \"Invisible\", \"FontSize\": 30 }");
 
-        Assert.Contains("\"HideMethod\": \"Minimize\"", File.ReadAllText(path));
-        Assert.Equal(LiveCaptionsHideMethod.Minimize, AppSettings.Load(path).HideMethod);
+        var settings = AppSettings.Load(path);
+
+        Assert.Equal(LiveCaptionsHideMethod.Minimize, settings.HideMethod);
+        Assert.Equal(30, settings.FontSize);
+        Assert.Equal(AppSettings.CurrentVersion, settings.SettingsVersion);
     }
 }

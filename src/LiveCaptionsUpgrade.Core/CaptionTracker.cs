@@ -82,6 +82,7 @@ public sealed class CaptionTracker
     private readonly List<(string Text, string Normalized)> _committed = new();
 
     private string _text = string.Empty;
+    private string? _lastRawText;
     private DateTimeOffset _lastChange = DateTimeOffset.MinValue;
     private bool _idleHandled;
     private string _pending = string.Empty;
@@ -116,7 +117,11 @@ public sealed class CaptionTracker
     /// <summary>Feeds the current Live Captions text. Call this on every poll, even when the text has not changed.</summary>
     public CaptionUpdate Process(string? rawText, DateTimeOffset now)
     {
-        string text = SentenceSplitter.NormalizeWhitespace(rawText);
+        // Most polls find the text as it was (nobody speaking, or between two words): nothing to work out then.
+        string text = rawText is not null && string.Equals(rawText, _lastRawText, StringComparison.Ordinal)
+            ? _text
+            : SentenceSplitter.NormalizeWhitespace(rawText);
+        _lastRawText = rawText;
         bool changed = !string.Equals(text, _text, StringComparison.Ordinal);
 
         if (changed)
@@ -160,6 +165,7 @@ public sealed class CaptionTracker
     {
         _committed.Clear();
         _text = string.Empty;
+        _lastRawText = null;
         _fullTextLengths.Clear();
         _pendingReplaces = 0;
         _lastChange = DateTimeOffset.MinValue;

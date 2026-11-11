@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using LiveCaptionsUpgrade.Core;
@@ -21,6 +23,15 @@ internal sealed class CaptionService
     private static readonly TimeSpan QuietAfter = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan QuietPollInterval = TimeSpan.FromMilliseconds(400);
 
+    // Live Captions normally shows a few hundred characters. Should it ever hold much more (it may keep everything
+    // while its window isn't drawn), only the end is looked at, so the work per change stays small.
+    private const int MaxTextLength = 4000;
+
+    // How often a line goes into the log saying how much of the computer this app and Live Captions used, so that
+    // a slow computer can be explained from the log. The first comes sooner.
+    private static readonly TimeSpan PerformanceLogInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan FirstPerformanceLog = TimeSpan.FromMinutes(1);
+
     private readonly LiveCaptionsReader _reader = new();
     private readonly CaptionTracker _tracker;
     private readonly TranscriptRecorder _transcript;
@@ -36,6 +47,9 @@ internal sealed class CaptionService
     private string? _status;
     private string _lastPending = string.Empty;
     private DateTime _lastTextChange;
+    private string? _lastRead;
+    private string _lastReadTail = string.Empty;
+    private readonly PerformanceCounters _performance = new();
 
     public CaptionService(AppSettings settings, TranscriptRecorder transcript)
     {
@@ -119,10 +133,13 @@ internal sealed class CaptionService
                     SetStatus(null);
                 }
 
+                long readStarted = Stopwatch.GetTimestamp();
                 string? text = _reader.ReadText();
+                _performance.CountRead(Stopwatch.GetElapsedTime(readStarted), text?.Length ?? 0);
                 UpdateLiveCaptionsVisibility();
                 if (text is not null)
                 {
+                    text = Tail(text);
                     if (_setupHintShown || _status is not null)
                     {
                         // Reading works again, so any earlier problem message is out of date.
@@ -134,11 +151,13 @@ internal sealed class CaptionService
                     if (update.TextChanged)
                     {
                         _lastTextChange = DateTime.UtcNow;
+                        _performance.Changes++;
                     }
 
                     Publish(update);
                 }
 
+                LogPerformance();
                 bool quiet = DateTime.UtcNow - _lastTextChange > QuietAfter;
                 await Task.Delay(quiet && QuietPollInterval > interval ? QuietPollInterval : interval, ct);
             }
@@ -164,6 +183,39 @@ internal sealed class CaptionService
                 }
             }
         }
+    }
+
+    /// <summary>The end of the text, if it's very long; the same string as last time if the text is the same.</summary>
+    private string Tail(string text)
+    {
+        if (text.Length <= MaxTextLength)
+        {
+            return text;
+        }
+
+        if (!string.Equals(text, _lastRead, StringComparison.Ordinal))
+        {
+            _lastRead = text;
+            _lastReadTail = SentenceSplitter.Tail(text, MaxTextLength);
+        }
+
+        return _lastReadTail;
+    }
+
+    private void LogPerformance()
+    {
+        var elapsed = _performance.Elapsed;
+        if (elapsed < (_performance.Logged ? PerformanceLogInterval : FirstPerformanceLog))
+        {
+            return;
+        }
+
+        string hidden = !_reader.IsHidden ? "shown"
+            : _reader.HideMethod == LiveCaptionsHideMethod.Minimize ? "minimized"
+            : _reader.IsDocked ? "transparent, docked"
+            : "transparent";
+        Log.Info(_performance.Report(_reader.ProcessId) + string.Create(
+            CultureInfo.InvariantCulture, $"; Live Captions window {hidden}, hidden again {_reader.Rehides} times since it was found"));
     }
 
     private void UpdateLiveCaptionsVisibility()

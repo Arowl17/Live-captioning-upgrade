@@ -158,6 +158,21 @@ public partial class App : Application
         }
     }
 
+    /// <summary>Opens the folder with app.log, which says what the app did and how much of the computer it used.</summary>
+    internal void OpenLogFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.LogDirectory);
+            OpenWithShell(AppPaths.LogDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+            or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            _tray?.ShowNotice($"Can't open the log folder ({ex.Message}).");
+        }
+    }
+
     internal void OpenSettings()
     {
         if (_settingsWindow is not null)

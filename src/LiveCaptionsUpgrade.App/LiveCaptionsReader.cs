@@ -41,8 +41,12 @@ internal sealed class LiveCaptionsReader
     private static readonly TimeSpan MaxCaptionsSearchInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan LaunchTimeout = TimeSpan.FromSeconds(10);
 
-    // Don't fight Live Captions more than this often if it keeps undoing the hiding.
+    // Don't fight Live Captions more than this often if it undoes the hiding. Hiding a window again makes Windows
+    // do work for every window on screen, so if Live Captions keeps undoing it, each wait is twice the one before,
+    // up to the longest; once it has stayed hidden for a while, it's back to the shortest.
     private static readonly TimeSpan RehideInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MaxRehideInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan HiddenForGood = TimeSpan.FromMinutes(1);
 
     // How far past the edge of the desktop the invisible window is parked.
     private const int OffScreenMargin = 200;
@@ -68,6 +72,7 @@ internal sealed class LiveCaptionsReader
     private SavedWindowState? _saved;
     private LiveCaptionsHideMethod _hideMethod;
     private DateTime _lastHide = DateTime.MinValue;
+    private TimeSpan _rehideInterval = RehideInterval;
 
     public static string ExecutablePath => Path.Combine(Environment.SystemDirectory, "LiveCaptions.exe");
 
@@ -86,6 +91,19 @@ internal sealed class LiveCaptionsReader
     /// that strip of the screen reserved for it, so it shows up as empty space while Live Captions is invisible.
     /// </summary>
     public bool IsDocked { get; private set; }
+
+    /// <summary>How often Live Captions had to be hidden again after undoing it (for the performance log).</summary>
+    public int Rehides { get; private set; }
+
+    /// <summary>The id of the Live Captions process, or 0.</summary>
+    public int ProcessId
+    {
+        get
+        {
+            NativeMethods.GetWindowThreadProcessId(_hwnd, out uint processId);
+            return (int)processId;
+        }
+    }
 
     /// <summary>Finds the Live Captions window, starting Live Captions first if it is not running.</summary>
     /// <returns>False if the window did not appear in time.</returns>
@@ -137,6 +155,7 @@ internal sealed class LiveCaptionsReader
             _lastCaptionsSearch = DateTime.MinValue;
             _captionsSearchInterval = CaptionsSearchInterval;
             _saved = null;
+            _rehideInterval = RehideInterval;
             IsDocked = false;
             AdoptLeftoverHiddenState();
         }
@@ -217,11 +236,30 @@ internal sealed class LiveCaptionsReader
     {
         lock (_windowLock)
         {
-            if (!IsHidden || !IsAttached || IsStillHidden() || DateTime.UtcNow - _lastHide < RehideInterval)
+            if (!IsHidden || !IsAttached)
             {
                 return;
             }
 
+            var sinceHidden = DateTime.UtcNow - _lastHide;
+            if (IsStillHidden())
+            {
+                if (sinceHidden > HiddenForGood)
+                {
+                    _rehideInterval = RehideInterval;
+                }
+
+                return;
+            }
+
+            if (sinceHidden < _rehideInterval)
+            {
+                return;
+            }
+
+            Rehides++;
+            _rehideInterval = TimeSpan.FromTicks(Math.Min(_rehideInterval.Ticks * 2, MaxRehideInterval.Ticks));
+            Log.Info($"Live Captions was no longer hidden; hiding it again (next check in {_rehideInterval.TotalSeconds:0} s at the earliest)");
             ApplyHidden();
         }
     }
@@ -253,6 +291,11 @@ internal sealed class LiveCaptionsReader
                 : NativeMethods.SW_SHOWNOACTIVATE;
             placement.rcNormalPosition = KeepOnScreen(placement.rcNormalPosition);
             NativeMethods.SetWindowPlacement(_hwnd, ref placement);
+            if (NativeMethods.IsIconic(_hwnd))
+            {
+                // Still minimised (and without a taskbar button it couldn't be found): open it the plain way.
+                NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWNOACTIVATE);
+            }
         }
     }
 
@@ -338,22 +381,25 @@ internal sealed class LiveCaptionsReader
 
         if (_hideMethod == LiveCaptionsHideMethod.Minimize)
         {
+            // Minimised, Live Captions carries on captioning and its text can still be read, but Windows neither
+            // draws the window nor blends it into the screen: it costs nothing but the captioning itself.
             NativeMethods.SetWindowLong(_hwnd, NativeMethods.GWL_EXSTYLE, exStyle);
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
             return;
         }
 
-        // Fully transparent and click-through, so it can't be seen or clicked wherever it ends up...
+        // The other way, for when a minimised Live Captions stops captioning: fully transparent and click-through,
+        // so it can't be seen or clicked wherever it ends up...
         NativeMethods.SetWindowLong(
             _hwnd, NativeMethods.GWL_EXSTYLE, exStyle | NativeMethods.WS_EX_LAYERED | NativeMethods.WS_EX_TRANSPARENT);
         NativeMethods.SetLayeredWindowAttributes(_hwnd, 0, 0, NativeMethods.LWA_ALPHA);
 
-        // ...still shown rather than minimised, so it carries on updating its captions...
+        // ...still shown rather than minimised...
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWNOACTIVATE);
 
-        // ...and parked past the bottom-right corner of the desktop for good measure, at the size it has. (Not made
-        // bigger to keep more text: Live Captions redraws its whole window as the text moves, and a transparent
-        // window has to be copied by Windows every time it does, so a big one slowed down the whole computer.)
+        // ...and parked past the bottom-right corner of the desktop, at the size it has. Off screen matters: Windows
+        // has to draw a transparent window and blend it into the screen whenever its content changes, which Live
+        // Captions' does all the time, and that takes time away from games. (A bigger window made it worse.)
         int x = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN)
             + NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN) + OffScreenMargin;
         int y = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN)
@@ -376,9 +422,15 @@ internal sealed class LiveCaptionsReader
             return (exStyle & NativeMethods.WS_EX_TOOLWINDOW) != 0 && NativeMethods.IsIconic(_hwnd);
         }
 
-        // Position is deliberately not checked: a docked Live Captions may move itself back, but it stays invisible.
-        return (exStyle & HiddenStyleBits) == HiddenStyleBits && !NativeMethods.IsIconic(_hwnd) && GetAlpha(exStyle) == 0;
+        // Transparent isn't enough: on screen, Windows would still blend the transparent window into every frame
+        // (and into a game's). So it must also still be parked off screen, unless it's docked, when Live Captions
+        // decides where it is.
+        return (exStyle & HiddenStyleBits) == HiddenStyleBits && !NativeMethods.IsIconic(_hwnd) && GetAlpha(exStyle) == 0
+            && (IsDocked || IsOffScreen());
     }
+
+    private bool IsOffScreen() =>
+        NativeMethods.GetWindowRect(_hwnd, out var rect) && NativeMethods.MonitorFromRect(ref rect, NativeMethods.MONITOR_DEFAULTTONULL) == IntPtr.Zero;
 
     private bool IsDockedToScreenEdge()
     {

@@ -55,6 +55,7 @@ internal sealed class TrayIcon : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Settings…", null, Later(app.OpenSettings));
         menu.Items.Add("Open transcripts folder", null, Later(app.OpenTranscriptsFolder));
+        menu.Items.Add("Open log folder", null, Later(app.OpenLogFolder));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, Later(app.ExitApp));
 

@@ -55,6 +55,39 @@ public static class SentenceSplitter
     }
 
     /// <summary>
+    /// The end of <paramref name="text"/>: its last <paramref name="maxLength"/> characters, less whatever is left
+    /// of the sentence that was cut into, so that it starts with a whole sentence (as when Live Captions drops its
+    /// oldest line). Text that is short enough is returned as it is.
+    /// </summary>
+    public static string Tail(string text, int maxLength)
+    {
+        if (text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        int cut = text.Length - maxLength;
+        int firstSpace = -1;
+        for (int i = cut; i < text.Length - 1; i++)
+        {
+            if (!char.IsWhiteSpace(text[i + 1]))
+            {
+                continue;
+            }
+
+            if (Terminators.IndexOf(text[i]) >= 0 || Closers.IndexOf(text[i]) >= 0 && i > 0 && Terminators.IndexOf(text[i - 1]) >= 0)
+            {
+                return text[(i + 1)..].TrimStart();
+            }
+
+            firstSpace = firstSpace < 0 ? i + 1 : firstSpace;
+        }
+
+        // One endless sentence: start at a word, at least.
+        return firstSpace < 0 ? text[cut..] : text[firstSpace..].TrimStart();
+    }
+
+    /// <summary>
     /// Splits text into sentences. Every segment except possibly the last is terminated;
     /// the last one is unterminated when the speaker is mid-sentence.
     /// </summary>

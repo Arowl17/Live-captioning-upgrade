@@ -5,6 +5,20 @@ namespace LiveCaptionsUpgrade.Core.Tests;
 public class SentenceSplitterTests
 {
     [Fact]
+    public void Tail_of_a_long_text_starts_with_a_whole_sentence()
+    {
+        const string Text = "First one here. Second one \"quoted.\" Third one? Fourth one";
+
+        Assert.Same(Text, SentenceSplitter.Tail(Text, 1000));
+        Assert.Equal("Third one? Fourth one", SentenceSplitter.Tail(Text, 30));
+        Assert.Equal("Third one? Fourth one", SentenceSplitter.Tail(Text, 40));
+        Assert.Equal("Fourth one", SentenceSplitter.Tail(Text, 15));
+
+        // Nothing but one endless sentence: from a word on.
+        Assert.Equal("seven eight", SentenceSplitter.Tail("one two three four five six seven eight", 14));
+    }
+
+    [Fact]
     public void Splits_on_sentence_punctuation_and_keeps_trailing_fragment()
     {
         var segments = SentenceSplitter.Split("Hi there! How are you? I am fine. And");

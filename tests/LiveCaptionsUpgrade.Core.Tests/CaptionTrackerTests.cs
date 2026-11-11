@@ -374,6 +374,26 @@ public class CaptionTrackerTests
     }
 
     [Fact]
+    public void Live_Captions_keeping_everything_it_heard_is_followed_through_the_end_of_its_text()
+    {
+        // As it may do while its window isn't drawn: the text only grows. The app passes on its end, cut at a
+        // sentence, which must come out the same as the whole text would.
+        var said = Enumerable.Range(1, 400).Select(i => $"This is sentence number {i} of the call.").ToList();
+        string text = string.Empty;
+        foreach (string sentence in said)
+        {
+            foreach (string word in sentence.Split(' '))
+            {
+                text += (text.Length > 0 ? " " : string.Empty) + word;
+                Feed(SentenceSplitter.Tail(text, 600));
+            }
+        }
+
+        _emitted.Apply(_tracker.Flush());
+        Assert.Equal(said, _emitted);
+    }
+
+    [Fact]
     public void The_same_short_number_said_again_is_shown_again()
     {
         Feed("The code is 12. 12. Yes");

@@ -167,8 +167,8 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Style="{StaticResource Label}" Text="How to hide it" />
                     <ComboBox Grid.Column="1" x:Name="HideMethodBox" Margin="0,3">
-                        <ComboBoxItem Content="Invisible (recommended)" />
-                        <ComboBoxItem Content="Minimize (try this if captions stop updating)" />
+                        <ComboBoxItem Content="Transparent (only if captions stop while minimized; can slow games)" />
+                        <ComboBoxItem Content="Minimized (recommended: lightest on the computer)" />
                     </ComboBox>
                 </Grid>
             </StackPanel>
